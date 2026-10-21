@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "author": "Sofya Andrade e Matheus Santos",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 19.2, "left": 14.44, "attrs": {} },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": -153.3,
+      "left": 148.2,
+      "attrs": { "temperature": "15", "humidity": "60" }
+    },
+    { "type": "wokwi-potentiometer", "id": "pot1", "top": 65.9, "left": -182.6, "attrs": {} },
+    {
+      "type": "wokwi-relay-module",
+      "id": "rele_aquec",
+      "top": 0,
+      "left": 230,
+      "attrs": { "label": "Aquecimento" }
+    },
+    {
+      "type": "wokwi-relay-module",
+      "id": "rele_irrig",
+      "top": 115,
+      "left": 230,
+      "attrs": { "label": "Irrigacao" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "dht1:VCC", "esp:3V3", "red", [ "h-172.8", "v57.6", "v28.8" ] ],
+    [ "dht1:GND", "esp:GND.1", "black", [ "v28.8", "h-172.95" ] ],
+    [ "dht1:SDA", "esp:4", "green", [ "v9.6", "h-38.3", "v144" ] ],
+    [ "pot1:VCC", "esp:3V3", "red", [ "v28.8", "h95.2", "v-134.4" ] ],
+    [ "pot1:GND", "esp:GND.1", "black", [ "v105.6", "h144", "v-86.4" ] ],
+    [ "pot1:SIG", "esp:34", "orange", [ "v57.6", "h66.8", "v-124.8" ] ],
+    [ "esp:18", "rele_aquec:IN", "orange", [ "h86.4", "v-86.4" ] ],
+    [ "rele_aquec:VCC", "esp:5V", "red", [ "h-76.4", "v269", "h-153.6", "v-67.2" ] ],
+    [ "rele_aquec:GND", "esp:GND.2", "black", [] ],
+    [ "esp:19", "rele_irrig:IN", "blue", [ "h48", "v38.4", "h66.8" ] ],
+    [ "rele_irrig:VCC", "esp:5V", "red", [ "h-38", "v115.6", "h-182.4", "v-28.8" ] ],
+    [ "rele_irrig:GND", "esp:GND.2", "black", [ "h-38", "v-48", "h-28.8", "v-48" ] ]
+  ],
+  "dependencies": {}
+}
