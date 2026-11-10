@@ -1,0 +1,11 @@
+{
+  "planta": "Grandiuva",
+  "temperatura": 24.1,
+  "umidadeSolo": 24.5,
+  "luminosidade": 96.2,
+  "soloValido": true,
+  "luzValida": true,
+  "aquecedor": false,
+  "bomba": true,
+  "sombreamento": true
+}

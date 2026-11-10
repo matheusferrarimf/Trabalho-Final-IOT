@@ -1,0 +1,366 @@
+[
+  {
+    "id": "e0261109a1000001",
+    "type": "tab",
+    "label": "UNIDAVI · Plantas / Dashboard 1.0 + API",
+    "disabled": false,
+    "info": "Dashboard LEGADO node-red-dashboard, disponivel em /ui. Fluxo MQTT + API.",
+    "wires": null
+  },
+  {
+    "id": "7f20260000000001",
+    "type": "mqtt in",
+    "z": "e0261109a1000001",
+    "name": "MQTT - telemetria do Arduino",
+    "topic": "unidavi/1025897/iot/plantas/telemetria",
+    "qos": "0",
+    "datatype": "auto",
+    "broker": "7f202600000000ff",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 180,
+    "y": 120,
+    "wires": [
+      [
+        "7f20260000000002"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000002",
+    "type": "function",
+    "z": "e0261109a1000001",
+    "name": "Validar, armazenar e normalizar",
+    "func": "// Entrada: JSON enviado por Arduino Mega 2560 via MQTT.\n// Saida: {atual, historico} para o Dashboard 1.0.\nlet entrada = msg.payload;\ntry {\n    if (typeof entrada === \"string\") entrada = JSON.parse(entrada);\n    if (!entrada || typeof entrada !== \"object\" || Array.isArray(entrada)) throw new Error(\"Payload nao e objeto\");\n} catch (erro) {\n    node.warn(\"Telemetria descartada: \" + erro.message);\n    return null;\n}\nif (entrada.planta !== \"Araucaria\" && entrada.planta !== \"Grandiuva\") {\n    node.warn(\"Planta desconhecida: \" + String(entrada.planta));\n    return null;\n}\nconst numero = (valor, minimo, maximo) =>\n    typeof valor === \"number\" && Number.isFinite(valor) && valor >= minimo && valor <= maximo\n        ? Math.round(valor * 10) / 10 : null;\nconst soloValido = entrada.soloValido === true;\nconst luzValida = entrada.planta === \"Grandiuva\" && entrada.luzValida === true;\nconst atual = {\n    planta: entrada.planta,\n    temperatura: numero(entrada.temperatura, -40, 80),\n    umidadeSolo: soloValido ? numero(entrada.umidadeSolo, 0, 100) : null,\n    luminosidade: luzValida ? numero(entrada.luminosidade, 0, 100) : null,\n    soloValido: soloValido,\n    luzValida: luzValida,\n    aquecedor: entrada.aquecedor === true,\n    bomba: entrada.bomba === true,\n    sombreamento: entrada.sombreamento === true,\n    limiarSolo: entrada.planta === \"Araucaria\" ? 35 : 30,\n    limiarTemperatura: 10,\n    limiarLuminosidade: 90,\n    origem: msg.topic === \"unidavi/1025897/iot/plantas/telemetria\" ? \"mqtt\" : \"simulacao\",\n    recebidoEm: new Date().toISOString()\n};\nflow.set(\"plantasAtual\", atual);\nlet historico = flow.get(\"plantasHistorico\") || [];\nhistorico.push(atual);\n// 360 amostras representam aproximadamente uma hora na taxa de 10 s/amostra.\nif (historico.length > 360) historico = historico.slice(-360);\nflow.set(\"plantasHistorico\", historico);\nmsg.payload = { atual: atual, historico: historico.slice(-50) };\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 480,
+    "y": 150,
+    "wires": [
+      [
+        "e0261109a1000093",
+        "7f2026000000000e"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000003",
+    "type": "inject",
+    "z": "e0261109a1000001",
+    "name": "Atualizar status (5 s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.5,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 170,
+    "y": 230,
+    "wires": [
+      [
+        "7f20260000000004"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000004",
+    "type": "function",
+    "z": "e0261109a1000001",
+    "name": "Recarregar última leitura",
+    "func": "// Atualiza situacao do painel mesmo se pararem de chegar mensagens MQTT.\nconst atual = flow.get(\"plantasAtual\") || null;\nconst historico = flow.get(\"plantasHistorico\") || [];\nmsg.payload = { atual: atual, historico: historico.slice(-50) };\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 480,
+    "y": 230,
+    "wires": [
+      [
+        "e0261109a1000093"
+      ]
+    ]
+  },
+  {
+    "id": "7f2026000000000e",
+    "type": "debug",
+    "z": "e0261109a1000001",
+    "name": "Pacotes recebidos (normalizados)",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload.atual",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 830,
+    "y": 110,
+    "wires": []
+  },
+  {
+    "id": "7f20260000000006",
+    "type": "http in",
+    "z": "e0261109a1000001",
+    "name": "GET /api/plantas/atual",
+    "url": "/api/plantas/atual",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 205,
+    "y": 340,
+    "wires": [
+      [
+        "7f20260000000007"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000007",
+    "type": "function",
+    "z": "e0261109a1000001",
+    "name": "API - leitura mais recente",
+    "func": "const atual = flow.get(\"plantasAtual\") || null;\nmsg.headers = { \"Content-Type\": \"application/json; charset=utf-8\", \"Cache-Control\": \"no-store\" };\nif (!atual) {\n    msg.statusCode = 503;\n    msg.payload = { erro: \"sem_telemetria\", mensagem: \"Aguardando primeira mensagem MQTT ou simulacao.\" };\n    return msg;\n}\nconst idade = Date.now() - Date.parse(atual.recebidoEm);\nmsg.statusCode = 200;\nmsg.payload = {\n    online: idade >= 0 && idade <= 30000,\n    idadeSegundos: Math.max(0, Math.floor(idade / 1000)),\n    intervaloPublicacaoSegundos: 10,\n    telemetria: atual\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 510,
+    "y": 340,
+    "wires": [
+      [
+        "7f20260000000008"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000008",
+    "type": "http response",
+    "z": "e0261109a1000001",
+    "name": "JSON atual",
+    "statusCode": "",
+    "headers": {},
+    "x": 800,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "7f20260000000009",
+    "type": "http in",
+    "z": "e0261109a1000001",
+    "name": "GET /api/plantas/historico",
+    "url": "/api/plantas/historico",
+    "method": "get",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 210,
+    "y": 400,
+    "wires": [
+      [
+        "7f2026000000000a"
+      ]
+    ]
+  },
+  {
+    "id": "7f2026000000000a",
+    "type": "function",
+    "z": "e0261109a1000001",
+    "name": "API - últimas 360 leituras",
+    "func": "const todos = flow.get(\"plantasHistorico\") || [];\nconst parametros = (msg.req && msg.req.query) || {};\nconst limiteRecebido = Number(parametros.limite);\nconst limite = Number.isFinite(limiteRecebido) && limiteRecebido > 0\n    ? Math.min(Math.floor(limiteRecebido), 360) : 60;\nconst planta = parametros.planta;\nconst selecionados = planta === \"Araucaria\" || planta === \"Grandiuva\"\n    ? todos.filter(x => x.planta === planta) : todos;\nmsg.statusCode = 200;\nmsg.headers = { \"Content-Type\": \"application/json; charset=utf-8\", \"Cache-Control\": \"no-store\" };\nmsg.payload = {\n    totalDisponivel: selecionados.length,\n    limite: limite,\n    planta: (planta === \"Araucaria\" || planta === \"Grandiuva\") ? planta : \"todas\",\n    amostras: selecionados.slice(-limite)\n};\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 515,
+    "y": 400,
+    "wires": [
+      [
+        "7f2026000000000b"
+      ]
+    ]
+  },
+  {
+    "id": "7f2026000000000b",
+    "type": "http response",
+    "z": "e0261109a1000001",
+    "name": "JSON histórico",
+    "statusCode": "",
+    "headers": {},
+    "x": 800,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "7f2026000000000c",
+    "type": "inject",
+    "z": "e0261109a1000001",
+    "name": "TESTAR: Araucária",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "simulacao",
+    "payload": "{\"planta\": \"Araucaria\", \"temperatura\": 8.7, \"umidadeSolo\": 27.5, \"luminosidade\": null, \"soloValido\": true, \"luzValida\": false, \"aquecedor\": true, \"bomba\": true, \"sombreamento\": false}",
+    "payloadType": "json",
+    "x": 200,
+    "y": 520,
+    "wires": [
+      [
+        "7f20260000000002"
+      ]
+    ]
+  },
+  {
+    "id": "7f2026000000000d",
+    "type": "inject",
+    "z": "e0261109a1000001",
+    "name": "TESTAR: Grandiúva",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "simulacao",
+    "payload": "{\"planta\": \"Grandiuva\", \"temperatura\": 24.1, \"umidadeSolo\": 24.5, \"luminosidade\": 96.2, \"soloValido\": true, \"luzValida\": true, \"aquecedor\": false, \"bomba\": true, \"sombreamento\": true}",
+    "payloadType": "json",
+    "x": 200,
+    "y": 585,
+    "wires": [
+      [
+        "7f20260000000002"
+      ]
+    ]
+  },
+  {
+    "id": "7f20260000000013",
+    "type": "comment",
+    "z": "e0261109a1000001",
+    "name": "1. MQTT local via bridge do broker publico (sem mudar o .ino)",
+    "info": "Arduino publica em test.mosquitto.org. Mosquitto Docker faz bridge inbound do topico unidavi/1025897/iot/plantas/telemetria. Node-RED conecta a mosquitto:1883.",
+    "x": 295,
+    "y": 70,
+    "wires": []
+  },
+  {
+    "id": "7f20260000000014",
+    "type": "comment",
+    "z": "e0261109a1000001",
+    "name": "2. API HTTP (GET) - sem alterar o .ino",
+    "info": "/api/plantas/atual e /api/plantas/historico?limite=60&planta=Grandiuva",
+    "x": 265,
+    "y": 295,
+    "wires": []
+  },
+  {
+    "id": "7f20260000000015",
+    "type": "comment",
+    "z": "e0261109a1000001",
+    "name": "3. Clique nos injects para testar sem a placa",
+    "info": "A simulação atualiza painel e API, mas NÃO controla os LEDs reais.",
+    "x": 242,
+    "y": 485,
+    "wires": []
+  },
+  {
+    "id": "7f202600000000ff",
+    "type": "mqtt-broker",
+    "name": "Mosquitto local Docker (com bridge publica)",
+    "broker": "mosquitto",
+    "port": "1883",
+    "clientid": "nodered-unidavi-painel",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "wires": null
+  },
+  {
+    "id": "e0261109a1000091",
+    "type": "ui_tab",
+    "name": "Monitoramento das Plantas",
+    "icon": "dashboard",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "e0261109a1000092",
+    "type": "ui_group",
+    "name": "Telemetria e Atuadores",
+    "tab": "e0261109a1000091",
+    "order": 1,
+    "disp": false,
+    "width": "16",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "e0261109a1000093",
+    "type": "ui_template",
+    "z": "e0261109a1000001",
+    "group": "e0261109a1000092",
+    "name": "Painel IoT /ui (Dashboard 1.x)",
+    "order": 1,
+    "width": "16",
+    "height": "0",
+    "format": "<div id=\"unidavi-legado\" class=\"uv-shell\">\n  <div class=\"uv-hero\">\n    <div>\n      <div class=\"uv-overline\">UNIDAVI · PROJETO FINAL IOT</div>\n      <h1>Monitoramento das plantas</h1>\n      <p>Arduino Mega 2560 + ESP8266 · Sensores via MQTT</p>\n    </div>\n    <div class=\"uv-top-flags\">\n      <span class=\"uv-pill\" ng-class=\"{'uv-live': status === 'Atualizando', 'uv-test': status === 'Simulação', 'uv-stale': status === 'Sem atualização'}\">{{status}}</span>\n      <span class=\"uv-pill uv-data-test\" ng-if=\"atual && atual.origem === 'simulacao'\">DADOS DE TESTE</span>\n    </div>\n  </div>\n\n  <div class=\"uv-plants\">\n    <span class=\"uv-eyebrow\">PLANTA SELECIONADA NO ARDUINO</span>\n    <div class=\"uv-plant-row\">\n      <div class=\"uv-plant\" ng-class=\"{'uv-active': atual && atual.planta === 'Araucaria'}\">\n        <span class=\"uv-plant-icon\">🌲</span><div><strong>Araucária</strong><small>Umidade mínima: 35%</small></div>\n      </div>\n      <div class=\"uv-plant\" ng-class=\"{'uv-active': atual && atual.planta === 'Grandiuva'}\">\n        <span class=\"uv-plant-icon\">🌿</span><div><strong>Grandiúva</strong><small>Umidade mínima: 30%</small></div>\n      </div>\n    </div>\n    <div class=\"uv-plant-help\">A seleção ocorre no botão físico D30 (3 cliques em 2 segundos).</div>\n  </div>\n\n  <div class=\"uv-section-header\"><h2>Leituras dos sensores</h2><span>MQTT: publicação prevista a cada 10 segundos</span></div>\n  <div class=\"uv-metrics\">\n    <div class=\"uv-card\">\n      <div class=\"uv-card-label\"><span>🌡️</span> TEMPERATURA DO AR</div>\n      <div class=\"uv-big-value\">{{valorTemperatura}}<span ng-if=\"valorTemperatura !== '—'\">°C</span></div>\n      <div class=\"uv-mini-chart\"><svg viewBox=\"0 0 280 66\" preserveAspectRatio=\"none\" aria-label=\"Tendência da temperatura\">\n        <polyline ng-if=\"sparkTemperatura\" ng-attr-points=\"{{sparkTemperatura}}\" stroke=\"#3B82F6\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"></polyline>\n        <line ng-if=\"!sparkTemperatura\" x1=\"0\" y1=\"33\" x2=\"280\" y2=\"33\" stroke=\"#cbd5e1\" stroke-dasharray=\"5 6\" stroke-width=\"2\"></line>\n      </svg></div>\n      <div class=\"uv-note\">Araucária: aquecimento abaixo de 10 °C</div>\n    </div>\n    <div class=\"uv-card\">\n      <div class=\"uv-card-label\"><span>💧</span> UMIDADE DO SOLO</div>\n      <div class=\"uv-big-value\">{{valorSolo}}<span ng-if=\"unidadeSolo\">%</span></div>\n      <div class=\"uv-progress\"><div ng-style=\"{'width': percentualSolo + '%'}\"></div></div>\n      <div class=\"uv-mini-chart\"><svg viewBox=\"0 0 280 66\" preserveAspectRatio=\"none\" aria-label=\"Tendência da umidade\">\n        <polyline ng-if=\"sparkSolo\" ng-attr-points=\"{{sparkSolo}}\" stroke=\"#0D9A83\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"></polyline>\n        <line ng-if=\"!sparkSolo\" x1=\"0\" y1=\"33\" x2=\"280\" y2=\"33\" stroke=\"#cbd5e1\" stroke-dasharray=\"5 6\" stroke-width=\"2\"></line>\n      </svg></div>\n      <div class=\"uv-note\">Irrigação abaixo de {{limiarSolo}}</div>\n    </div>\n    <div class=\"uv-card\" ng-class=\"{'uv-na': atual && atual.planta === 'Araucaria'}\">\n      <div class=\"uv-card-label\"><span>☀️</span> LUMINOSIDADE</div>\n      <div class=\"uv-big-value\">{{valorLuz}}<span ng-if=\"unidadeLuz\">%</span></div>\n      <div class=\"uv-progress uv-progress-sun\"><div ng-style=\"{'width': percentualLuz + '%'}\"></div></div>\n      <div class=\"uv-mini-chart\"><svg viewBox=\"0 0 280 66\" preserveAspectRatio=\"none\" aria-label=\"Tendência da luminosidade\">\n        <polyline ng-if=\"sparkLuz\" ng-attr-points=\"{{sparkLuz}}\" stroke=\"#E6A341\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\"></polyline>\n        <line ng-if=\"!sparkLuz\" x1=\"0\" y1=\"33\" x2=\"280\" y2=\"33\" stroke=\"#cbd5e1\" stroke-dasharray=\"5 6\" stroke-width=\"2\"></line>\n      </svg></div>\n      <div class=\"uv-note\">{{notaLuz}}</div>\n    </div>\n  </div>\n\n  <div class=\"uv-details\">\n    <div class=\"uv-box\">\n      <h2>Estados dos atuadores <small>LEDs do protótipo</small></h2>\n      <div class=\"uv-act\"><div><span>♨️</span><strong>Aquecedor</strong><small>D22</small></div><b ng-class=\"{'uv-on': atual && atual.aquecedor}\">{{estadoAquecedor}}</b></div>\n      <div class=\"uv-act\"><div><span>🚿</span><strong>Bomba de irrigação</strong><small>D24</small></div><b ng-class=\"{'uv-on': atual && atual.bomba}\">{{estadoBomba}}</b></div>\n      <div class=\"uv-act\"><div><span>⛱️</span><strong>Sombreamento</strong><small>D26</small></div><b ng-class=\"{'uv-on': atual && atual.sombreamento}\">{{estadoSombra}}</b></div>\n    </div>\n    <div class=\"uv-box\">\n      <h2>Informações da telemetria <small>{{origem}}</small></h2>\n      <div class=\"uv-info\"><span>Último pacote recebido</span><strong>{{ultimaAtualizacao}}</strong></div>\n      <div class=\"uv-info\"><span>Tempo desde a leitura</span><strong>{{idade}}</strong></div>\n      <div class=\"uv-info\"><span>Histórico exibido</span><strong>{{qtdHistorico}} amostras recentes</strong></div>\n      <div class=\"uv-info\"><span>Transmissão</span><strong>MQTT · porta 1883</strong></div>\n      <div class=\"uv-api\">API JSON: <code>GET /api/plantas/atual</code> e <code>GET /api/plantas/historico</code></div>\n    </div>\n  </div>\n  <div class=\"uv-footer\">Leituras e estados apenas para visualização. Os LEDs são controlados localmente pelo Arduino.</div>\n</div>\n\n<script>\n(function(scope) {\n  // O Dashboard 1.x utiliza AngularJS (nao Vue / Dashboard 2.0).\n  function fmt(n) { return typeof n === 'number' && isFinite(n) ? n.toFixed(1).replace('.', ',') : '—'; }\n  function pontos(hist, planta, campo) {\n    var itens = (hist || []).filter(function(d) {\n      return d && d.planta === planta && typeof d[campo] === 'number' && isFinite(d[campo]);\n    }).slice(-28);\n    if (itens.length < 2) return '';\n    var valores = itens.map(function(d) { return d[campo]; });\n    var baixo = campo === 'temperatura' ? Math.min.apply(null, valores) - 1 : 0;\n    var alto = campo === 'temperatura' ? Math.max.apply(null, valores) + 1 : 100;\n    if (alto - baixo < 1) alto = baixo + 1;\n    return valores.map(function(v, i) {\n      var x = 5 + i * (270 / (valores.length - 1));\n      var y = 57 - (v - baixo) * 48 / (alto - baixo);\n      return x.toFixed(1) + ',' + y.toFixed(1);\n    }).join(' ');\n  }\n  function desenhar(msg) {\n    var dados = msg && msg.payload && typeof msg.payload === 'object' ? msg.payload : {};\n    var atual = dados.atual || null;\n    var hist = Array.isArray(dados.historico) ? dados.historico : [];\n    scope.atual = atual;\n    scope.qtdHistorico = hist.length;\n    scope.valorTemperatura = atual ? fmt(atual.temperatura) : '—';\n    scope.valorSolo = atual && atual.soloValido && atual.umidadeSolo !== null ? fmt(atual.umidadeSolo) : '—';\n    scope.valorLuz = !atual ? '—' : atual.planta === 'Araucaria' ? 'N/A' : atual.luzValida && atual.luminosidade !== null ? fmt(atual.luminosidade) : '—';\n    scope.unidadeSolo = !!(atual && atual.soloValido && typeof atual.umidadeSolo === 'number');\n    scope.unidadeLuz = !!(atual && atual.planta === 'Grandiuva' && atual.luzValida && typeof atual.luminosidade === 'number');\n    scope.percentualSolo = scope.unidadeSolo ? atual.umidadeSolo : 0;\n    scope.percentualLuz = scope.unidadeLuz ? atual.luminosidade : 0;\n    scope.limiarSolo = atual ? atual.limiarSolo + '%' : '35% (Araucária) / 30% (Grandiúva)';\n    scope.notaLuz = !atual ? 'Aguardando dados do sensor' : atual.planta === 'Araucaria' ? 'Não aplicável à Araucária' : atual.luzValida ? 'Sombreamento acima de 90%' : 'LDR não calibrado';\n    scope.estadoAquecedor = !atual ? '—' : atual.aquecedor ? 'LIGADO' : 'DESLIGADO';\n    scope.estadoBomba = !atual ? '—' : atual.bomba ? 'LIGADA' : 'DESLIGADA';\n    scope.estadoSombra = !atual ? '—' : atual.sombreamento ? 'LIGADO' : 'DESLIGADO';\n    scope.origem = !atual ? 'Aguardando dados' : atual.origem === 'simulacao' ? 'Simulação' : 'Recebido por MQTT';\n    var instante = atual && atual.recebidoEm ? Date.parse(atual.recebidoEm) : NaN;\n    var idadeMs = isFinite(instante) ? Math.max(0, Date.now() - instante) : NaN;\n    scope.idade = isFinite(idadeMs) ? Math.floor(idadeMs / 1000) + ' s' : '—';\n    scope.ultimaAtualizacao = isFinite(instante) ? new Date(instante).toLocaleString('pt-BR') : '—';\n    scope.status = !atual ? 'Aguardando dados' : !isFinite(idadeMs) || idadeMs > 30000 ? 'Sem atualização' : atual.origem === 'simulacao' ? 'Simulação' : 'Atualizando';\n    var planta = atual && atual.planta;\n    scope.sparkTemperatura = pontos(hist, planta, 'temperatura');\n    scope.sparkSolo = pontos(hist, planta, 'umidadeSolo');\n    scope.sparkLuz = planta === 'Grandiuva' ? pontos(hist, planta, 'luminosidade') : '';\n  }\n  desenhar(null);\n  scope.$watch('msg', function(msg) { if (msg) desenhar(msg); });\n})(scope);\n</script>\n\n<style>\n#unidavi-legado.uv-shell {font-family:Roboto,'Segoe UI',Arial,sans-serif;color:#21314a;box-sizing:border-box;padding:4px 2px 12px}\n#unidavi-legado * {box-sizing:border-box}\n#unidavi-legado .uv-hero {display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:26px;border-radius:18px;background:linear-gradient(116deg,#112e34,#126457);color:#fff}\n#unidavi-legado .uv-overline {font-size:10px;font-weight:800;letter-spacing:2px;color:#9ee8cc;margin-bottom:8px}\n#unidavi-legado h1 {margin:0 0 8px;font-size:26px;font-weight:800;line-height:1.15;letter-spacing:-.5px}\n#unidavi-legado .uv-hero p{margin:0;color:#d4eee5;font-size:12px}\n#unidavi-legado .uv-top-flags{display:flex;gap:8px;flex-wrap:wrap}\n#unidavi-legado .uv-pill{border-radius:22px;padding:8px 11px;font-weight:750;font-size:11px;background:rgba(255,255,255,.15);white-space:nowrap}\n#unidavi-legado .uv-pill.uv-live{color:#95f3d0}\n#unidavi-legado .uv-pill.uv-test{color:#ffe3a0}\n#unidavi-legado .uv-pill.uv-stale{color:#ffbaa6}\n#unidavi-legado .uv-pill.uv-data-test{border:1px solid rgba(255,255,255,.4)}\n#unidavi-legado .uv-plants{background:#fff;border:1px solid #dfe8e6;border-radius:14px;padding:17px 20px;margin-top:14px}\n#unidavi-legado .uv-eyebrow{font-size:10px;letter-spacing:1.3px;font-weight:750;color:#6a7b85}\n#unidavi-legado .uv-plant-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}\n#unidavi-legado .uv-plant{display:flex;align-items:center;gap:12px;border-radius:11px;border:2px solid #edf0f0;padding:12px;color:#758590;background:#fafcfc;opacity:.78}\n#unidavi-legado .uv-plant.uv-active{border-color:#168873;background:#ebfaf5;color:#184f46;opacity:1}\n#unidavi-legado .uv-plant-icon{font-size:25px;line-height:1.2}\n#unidavi-legado .uv-plant strong,#unidavi-legado .uv-plant small{display:block}\n#unidavi-legado .uv-plant strong{font-size:14px}\n#unidavi-legado .uv-plant small{font-size:11px;margin-top:4px}\n#unidavi-legado .uv-plant-help{margin-top:10px;color:#758590;font-size:10px}\n#unidavi-legado .uv-section-header{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:20px 0 11px}\n#unidavi-legado h2{font-size:17px;margin:0;font-weight:750}\n#unidavi-legado .uv-section-header span{color:#7d8b98;font-size:11px}\n#unidavi-legado .uv-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}\n#unidavi-legado .uv-card{min-width:0;background:#fff;border:1px solid #e3e9ee;border-radius:14px;padding:18px 15px 14px;box-shadow:0 4px 14px rgba(32,61,77,.04)}\n#unidavi-legado .uv-card.uv-na{background:#fafafa}\n#unidavi-legado .uv-card-label{font-size:10px;font-weight:800;letter-spacing:.6px;color:#687e8f;display:flex;align-items:center;gap:7px}\n#unidavi-legado .uv-card-label span{font-size:18px}\n#unidavi-legado .uv-big-value{font-size:37px;letter-spacing:-.9px;font-weight:800;color:#162c3f;padding:12px 0 7px;white-space:nowrap}\n#unidavi-legado .uv-big-value span{font-size:15px;letter-spacing:0;margin-left:4px;color:#768994;font-weight:600}\n#unidavi-legado .uv-mini-chart{height:57px;overflow:hidden;margin-top:8px}\n#unidavi-legado .uv-mini-chart svg{display:block;width:100%;height:100%}\n#unidavi-legado .uv-progress{height:5px;border-radius:5px;background:#e7eeec;overflow:hidden;margin:2px 0 8px}\n#unidavi-legado .uv-progress>div{height:100%;background:#17a28b;border-radius:5px;transition:width .3s ease}\n#unidavi-legado .uv-progress-sun>div{background:#e5a23c}\n#unidavi-legado .uv-note{font-size:10px;color:#7c8b98;min-height:29px;margin-top:8px;line-height:1.4}\n#unidavi-legado .uv-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}\n#unidavi-legado .uv-box{background:#fff;border:1px solid #e3e9ee;border-radius:14px;padding:18px}\n#unidavi-legado .uv-box h2{font-size:15px;margin-bottom:13px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}\n#unidavi-legado .uv-box h2 small{font-size:10px;font-weight:500;color:#8593a0}\n#unidavi-legado .uv-act{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-top:1px solid #edf0f1;gap:10px}\n#unidavi-legado .uv-act>div{display:flex;align-items:center;gap:8px}\n#unidavi-legado .uv-act>div span{font-size:19px}\n#unidavi-legado .uv-act strong{font-size:12px}\n#unidavi-legado .uv-act small{color:#8a9aa4;font-size:10px}\n#unidavi-legado .uv-act b{font-size:10px;font-weight:800;padding:6px 9px;border-radius:18px;background:#edf1f3;color:#6a7a82;white-space:nowrap}\n#unidavi-legado .uv-act b.uv-on{color:#0f755e;background:#d9f8e8}\n#unidavi-legado .uv-info{padding:10px 0;border-top:1px solid #edf0f1;display:flex;justify-content:space-between;gap:10px;align-items:center}\n#unidavi-legado .uv-info span{font-size:11px;color:#788996}\n#unidavi-legado .uv-info strong{font-size:11px;text-align:right}\n#unidavi-legado .uv-api{background:#f3f7f7;border-radius:9px;padding:11px;margin-top:9px;font-size:11px;line-height:1.8}\n#unidavi-legado .uv-api code{font-size:10px;word-break:break-word;color:#187c6b}\n#unidavi-legado .uv-footer{margin:13px 4px 0;font-size:10px;color:#7d8d96;text-align:center}\n@media(max-width:700px){#unidavi-legado .uv-metrics{grid-template-columns:1fr}#unidavi-legado .uv-details{grid-template-columns:1fr}#unidavi-legado .uv-big-value{font-size:33px}}\n@media(max-width:460px){#unidavi-legado .uv-plant-row{grid-template-columns:1fr}#unidavi-legado .uv-hero{padding:18px}#unidavi-legado .uv-card{padding:15px}}\n</style>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 1040,
+    "y": 180,
+    "wires": [
+      []
+    ]
+  }
+]
