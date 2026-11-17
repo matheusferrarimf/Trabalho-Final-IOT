@@ -10,7 +10,7 @@
  *   Solo ......... A15        LED aquecedor  D22
  *   LDR .......... A14        LED bomba .... D24
  *                             LED sombra ... D26
- *   LCD 16x2 (paralelo, 4 bits): RS D12 | E D11 | D4 D5 | D5 D4 | D6 D3 | D7 D2
+ *   LCD 16x2 (paralelo, 4 bits): RS D32 | E D34 | D4 D36 | D5 D38 | D6 D40 | D7 D42
  *   (RW, K e V0 no GND/contraste; A no 5V com 220R; D0-D3 sem ligacao)
  *
  * Botao: 3 cliques em 2 segundos alternam a planta.
@@ -44,14 +44,14 @@ const unsigned long RETENTATIVA_REDE_MS = 15000UL, RETENTATIVA_MQTT_MS = 5000UL;
 const unsigned long TROCA_PAGINA_MS = 3000UL;   // tempo de cada tela do LCD
 
 // ---------- Rede (preencher com os dados reais) ----------
-const char WIFI_SSID[] = "Redmi Note 14 Pro 5G";
-const char WIFI_SENHA[] = "sofyafofo";
-const char MQTT_HOST[] = "10.144.159.104"; // EXEMPLO: IP do PC com o broker, NAO do Mega
+const char WIFI_SSID[] = "Piso Inferior";
+const char WIFI_SENHA[] = "12345678";
+const char MQTT_HOST[] = "test.mosquitto.org"; // EXEMPLO: IP do PC com o broker, NAO do Mega
 const uint16_t MQTT_PORTA = 1883;
 const char MQTT_USUARIO[] = "";           // vazio caso sem autenticacao
 const char MQTT_SENHA[] = "";
-const char MQTT_CLIENT_ID[] = "unidavi-mega-plantas-01";
-const char MQTT_TOPICO[] = "unidavi/iot/plantas/telemetria";
+// Padrao CP2: unidavi/iot/t27/{matriculas}/{especie}/{sensor|atuador|status}/....
+const char MQTT_PREFIXO[] = "unidavi/iot/t27/1025897_36728";
 
 DHT dht(PINO_DHT, DHT22);
 LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
@@ -95,6 +95,8 @@ float tempForcada = 0, soloForcado = 0, luzForcada = 0;
 unsigned long ultimaLeitura = 0, ultimaPublicacao = 0;
 unsigned long ultimaTentativaWiFi = 0, ultimaTentativaMQTT = 0;
 bool interfaceWiFiOK = false;
+bool publicacaoPendente = true, atuadoresPublicados = false;
+Estados ultimosEstadosPublicados;
 
 bool leituraBotaoAnterior = HIGH, estadoBotaoEstavel = HIGH;
 unsigned long ultimaMudancaBotao = 0, primeiroClique = 0;
@@ -102,6 +104,7 @@ uint8_t cliques = 0;
 
 // ---------- Utilidades ----------
 const char* nomePlanta() { return plantaAtiva == ARAUCARIA ? "Araucaria" : "Grandiuva"; }
+const char* especieTopico() { return plantaAtiva == ARAUCARIA ? "araucaria" : "grandiuva"; }
 float limiarSolo() { return plantaAtiva == ARAUCARIA ? LIMIAR_ARAUCARIA : LIMIAR_GRANDIUVA; }
 
 int lerADC(uint8_t pino) {
@@ -247,7 +250,16 @@ void atualizarTudo() {
 
 // ---------- Botao ----------
 void trocarPlanta() {
+  if (mqtt.connected()) {
+    char topicoStatus[100];
+    snprintf(topicoStatus, sizeof(topicoStatus), "%s/%s/status", MQTT_PREFIXO, especieTopico());
+    mqtt.publish(topicoStatus, "offline", true);
+    mqtt.disconnect(); // A nova conexao registra a ultima vontade da nova especie.
+  }
   plantaAtiva = plantaAtiva == ARAUCARIA ? GRANDIUVA : ARAUCARIA;
+  publicacaoPendente = true;
+  atuadoresPublicados = false;
+  ultimaTentativaMQTT = millis() - RETENTATIVA_MQTT_MS;
   Serial.print(F("\n>>> PLANTA ALTERADA: ")); Serial.println(nomePlanta());
   paginaDisplay = 0;                 // mostra a nova planta no LCD na hora
   ultimaTrocaPagina = millis();
@@ -332,7 +344,7 @@ void iniciarRede() {
   interfaceWiFiOK = true;
   mqtt.setServer(MQTT_HOST, MQTT_PORTA);
   mqtt.setBufferSize(384);
-  mqtt.setSocketTimeout(2);
+  mqtt.setSocketTimeout(5);
   mqtt.setKeepAlive(30);
   Serial.println(F("Interface AT encontrada. Tentando conectar Wi-Fi..."));
   ultimaTentativaWiFi = millis();
@@ -355,10 +367,22 @@ void manterRede() {
   if (!mqtt.connected()) {
     if (agora - ultimaTentativaMQTT >= RETENTATIVA_MQTT_MS) {
       ultimaTentativaMQTT = agora;
-      bool ok = strlen(MQTT_USUARIO) ? mqtt.connect(MQTT_CLIENT_ID, MQTT_USUARIO, MQTT_SENHA)
-                                     : mqtt.connect(MQTT_CLIENT_ID);
-      if (ok) Serial.println(F("MQTT conectado"));
-      else { Serial.print(F("Falha MQTT, state=")); Serial.println(mqtt.state()); }
+      char topicoStatus[100], clientId[80];
+      snprintf(topicoStatus, sizeof(topicoStatus), "%s/%s/status", MQTT_PREFIXO, especieTopico());
+      snprintf(clientId, sizeof(clientId), "t27-1025897_36728-%s-mega01", especieTopico());
+      Serial.print(F("[MQTT] Tentando ")); Serial.print(MQTT_HOST);
+      Serial.print(':'); Serial.println(MQTT_PORTA);
+      bool ok = mqtt.connect(clientId, strlen(MQTT_USUARIO) ? MQTT_USUARIO : NULL,
+                             strlen(MQTT_USUARIO) ? MQTT_SENHA : NULL,
+                             topicoStatus, 1, true, "offline");
+      if (ok) {
+        Serial.println(F("MQTT conectado"));
+        atuadoresPublicados = false;
+        publicacaoPendente = true;
+      } else {
+        Serial.print(F("Falha MQTT, state=")); Serial.println(mqtt.state());
+      }
+      ultimaTentativaMQTT = millis();
     }
   } else mqtt.loop();
 }
@@ -368,27 +392,52 @@ void numeroOuNull(char* destino, float valor, bool valido) {
   else strcpy(destino, "null");
 }
 
+bool publicarMensagem(const char* sufixo, const char* payload, bool retida) {
+  char topico[110];
+  snprintf(topico, sizeof(topico), "%s/%s/%s", MQTT_PREFIXO, especieTopico(), sufixo);
+  if (!mqtt.publish(topico, payload, retida)) {
+    Serial.print(F("[MQTT] Falha ao publicar: ")); Serial.println(topico);
+    return false;
+  }
+  Serial.print(F("[MQTT] Publicado: ")); Serial.println(topico);
+  Serial.println(payload);
+  return true;
+}
+
+bool publicarSensor(const char* nome, float valor, bool valido, const char* unidade) {
+  char numero[16], payload[72], sufixo[40];
+  numeroOuNull(numero, valor, valido);
+  snprintf(payload, sizeof(payload), "{\"valor\":%s,\"unidade\":\"%s\"}", numero, unidade);
+  snprintf(sufixo, sizeof(sufixo), "sensor/%s", nome);
+  return publicarMensagem(sufixo, payload, false);
+}
+
+bool publicarAtuador(const char* nome, bool ligado) {
+  char sufixo[40];
+  snprintf(sufixo, sizeof(sufixo), "atuador/%s", nome);
+  return publicarMensagem(sufixo, ligado ? "{\"estado\":\"ligado\"}" : "{\"estado\":\"desligado\"}", true);
+}
+
+void publicarAtuadores() {
+  if (!interfaceWiFiOK || !mqtt.connected()) return;
+  bool ok = true;
+  if (!atuadoresPublicados || estados.aquecedor != ultimosEstadosPublicados.aquecedor)
+    ok = publicarAtuador("aquecedor", estados.aquecedor) && ok;
+  if (!atuadoresPublicados || estados.bomba != ultimosEstadosPublicados.bomba)
+    ok = publicarAtuador("irrigacao", estados.bomba) && ok;
+  if (!atuadoresPublicados || estados.sombreamento != ultimosEstadosPublicados.sombreamento)
+    ok = publicarAtuador("sombreamento", estados.sombreamento) && ok;
+  if (ok) { ultimosEstadosPublicados = estados; atuadoresPublicados = true; }
+}
+
 void publicarTelemetria() {
   if (!interfaceWiFiOK || !mqtt.connected()) return;
-  char t[16], u[16], l[16], payload[300];
-  bool luzOk = plantaAtiva == GRANDIUVA && leituras.luzValida;
-  numeroOuNull(t, leituras.temperatura, leituras.temperaturaValida);
-  numeroOuNull(u, leituras.umidadeSolo, leituras.soloValido);
-  numeroOuNull(l, leituras.luminosidade, luzOk);
-  int len = snprintf(payload, sizeof(payload),
-      "{\"planta\":\"%s\",\"temperatura\":%s,\"umidadeSolo\":%s,"
-      "\"luminosidade\":%s,\"soloValido\":%s,\"luzValida\":%s,"
-      "\"aquecedor\":%s,\"bomba\":%s,\"sombreamento\":%s}",
-      nomePlanta(), t, u, l,
-      leituras.soloValido ? "true" : "false",
-      luzOk ? "true" : "false",
-      estados.aquecedor ? "true" : "false",
-      estados.bomba ? "true" : "false",
-      estados.sombreamento ? "true" : "false");
-  if (len <= 0 || len >= (int)sizeof(payload)) { Serial.println(F("Payload excedeu buffer")); return; }
-  if (mqtt.publish(MQTT_TOPICO, payload)) {
-    Serial.println(F("[MQTT] Publicado:")); Serial.println(payload);
-  } else Serial.println(F("[MQTT] Falha ao publicar"));
+  bool ok = publicarSensor("temperatura", leituras.temperatura, leituras.temperaturaValida, "C");
+  ok = publicarSensor("umidade-solo", leituras.umidadeSolo, leituras.soloValido, "%") && ok;
+  ok = publicarSensor("luminosidade", leituras.luminosidade,
+                       plantaAtiva == GRANDIUVA && leituras.luzValida, "%") && ok;
+  ok = publicarMensagem("status", "online", true) && ok;
+  publicacaoPendente = !ok;
 }
 
 // ---------- Setup / Loop ----------
@@ -432,8 +481,10 @@ void loop() {
   }
 
   manterRede();
+  publicarAtuadores();
 
-  if (millis() - ultimaPublicacao >= PUBLICACAO_MS) {
+  if (millis() - ultimaPublicacao >= PUBLICACAO_MS ||
+      (publicacaoPendente && millis() - ultimaPublicacao >= 250UL)) {
     ultimaPublicacao = millis();
     publicarTelemetria();
   }
