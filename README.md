@@ -146,18 +146,24 @@ T=  9.5 °C | Solo= 50.0 % (ADC 2048) | Aquecimento=ON  | Irrigacao=OFF  [TESTE:
 
 ```
 .
-└── Checkpoint 1 Copy/
-    ├── sketch.ino          # Código do ESP32
-    ├── diagram.json        # Circuito do Wokwi
-    ├── libraries.txt       # Bibliotecas usadas na simulação
-    └── wokwi-project.txt   # Link do projeto no Wokwi
+├── Checkpoint 1 Copy/
+│   ├── sketch_mega_mqtt_at/       # Firmware final do Mega 2560 (sensores, regras, LEDs, LCD)
+│   ├── esp8266_ponte_mqtt/        # Firmware do ESP8266: ponte MQTT sobre TLS (8883)
+│   ├── mega_gravar_esp/           # Mega como cabo USB para gravar o ESP8266 do shield
+│   ├── diagram.json               # Circuito do Wokwi (Checkpoint 1)
+│   └── libraries.txt / wokwi-project.txt
+├── cp2-broker/                    # Mosquitto + Node-RED locais (Checkpoint 2)
+└── UNIDAVI_IoT_API_Dashboard_NodeRED/
+    ├── CHECKPOINT_3.md            # Passo a passo do Checkpoint 3
+    ├── node_red_checkpoint3.json  # Fluxo e painel finais
+    └── supabase_schema.sql        # Banco no Supabase + envio ao ThingSpeak
 ```
 
 ## 🗺️ Roadmap
 
 - [x] **Checkpoint 1** — leitura dos sensores e acionamento com módulos relé
-- [ ] **Checkpoint 2** — conectividade Wi-Fi e envio dos dados via MQTT
-- [ ] **Checkpoint 3** — painel de monitoramento com Node-RED
+- [x] **Checkpoint 2** — conectividade Wi-Fi e envio dos dados via MQTT
+- [x] **Checkpoint 3** — MQTT sobre TLS no HiveMQ Cloud, painel final no Node-RED, Supabase e ThingSpeak (ver [CHECKPOINT_3.md](UNIDAVI_IoT_API_Dashboard_NodeRED/CHECKPOINT_3.md))
 
 ## 👥 Autores
 

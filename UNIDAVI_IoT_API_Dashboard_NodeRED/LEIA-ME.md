@@ -1,5 +1,7 @@
 # UNIDAVI — API e Dashboard de monitoramento de plantas
 
+**Checkpoint 3:** consulte o [guia de implantação](CHECKPOINT_3.md) para o novo fluxo com HiveMQ Cloud, as duas abas e a integração com Supabase e ThingSpeak.
+
 > **Checkpoint 2 atualizado:** use `node_red_checkpoint2.json` e o guia [CHECKPOINT_2.md](../cp2-broker/CHECKPOINT_2.md). Eles seguem o escopo da turma `t27`, as matrículas `1025897_36728`, tópicos separados e broker público direto. As instruções abaixo descrevem uma versão anterior e não correspondem ao JSON legado existente em todos os pontos.
 
 Projeto para o **Mega 2560 WiFi R3 + ESP8266 (firmware AT)**, baseado no sketch fornecido. **Não é necessário alterar o `.ino` para usar o fluxo**, desde que o MQTT já esteja conectando e publicando normalmente.

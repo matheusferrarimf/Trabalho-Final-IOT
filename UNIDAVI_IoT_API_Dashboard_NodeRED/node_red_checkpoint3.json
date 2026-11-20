@@ -1,0 +1,617 @@
+[
+  {
+    "id": "cp3-fluxo",
+    "type": "tab",
+    "label": "UNIDAVI · Checkpoint 3",
+    "disabled": false,
+    "info": "Turma t27 — 1025897_36728. Fluxo final das duas espécies."
+  },
+  {
+    "id": "cp3-broker",
+    "type": "mqtt-broker",
+    "name": "HiveMQ Cloud · CP3",
+    "broker": "SEU-CLUSTER.s1.eu.hivemq.cloud",
+    "port": "8883",
+    "tls": "cp3-tls",
+    "clientid": "nodered-1025897_36728-cp3",
+    "autoConnect": true,
+    "usetls": true,
+    "protocolVersion": "5",
+    "keepalive": "30",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthPayload": "",
+    "closeTopic": "",
+    "willTopic": ""
+  },
+  {
+    "id": "cp3-tls",
+    "type": "tls-config",
+    "name": "TLS · validar servidor",
+    "cert": "",
+    "key": "",
+    "ca": "",
+    "certname": "",
+    "keyname": "",
+    "caname": "",
+    "servername": "",
+    "verifyservercert": true,
+    "alpnprotocol": ""
+  },
+  {
+    "id": "cp3-mqtt",
+    "type": "mqtt in",
+    "z": "cp3-fluxo",
+    "name": "Telemetria · equipe 1025897_36728",
+    "topic": "unidavi/iot/t27/1025897_36728/#",
+    "qos": "1",
+    "datatype": "utf8",
+    "broker": "cp3-broker",
+    "nl": false,
+    "rap": false,
+    "rh": 0,
+    "inputs": 0,
+    "x": 195,
+    "y": 80,
+    "wires": [
+      [
+        "cp3-estado-fn"
+      ]
+    ],
+    "g": "cp3-bloco-entrada"
+  },
+  {
+    "id": "cp3-status",
+    "type": "status",
+    "z": "cp3-fluxo",
+    "name": "Conexão do MQTT in",
+    "scope": [
+      "cp3-mqtt"
+    ],
+    "x": 170,
+    "y": 240,
+    "wires": [
+      [
+        "cp3-estado-fn"
+      ]
+    ],
+    "g": "cp3-bloco-estado"
+  },
+  {
+    "id": "cp3-tick",
+    "type": "inject",
+    "z": "cp3-fluxo",
+    "name": "Atualizar a cada 5 s",
+    "props": [
+      {
+        "p": "topic",
+        "v": "recalcular",
+        "vt": "str"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.3,
+    "topic": "recalcular",
+    "x": 170,
+    "y": 290,
+    "wires": [
+      [
+        "cp3-estado-fn"
+      ]
+    ],
+    "g": "cp3-bloco-estado"
+  },
+  {
+    "id": "cp3-estado-fn",
+    "type": "function",
+    "z": "cp3-fluxo",
+    "name": "Validar, calcular estados e registrar mudanças",
+    "func": "const equipe = '1025897_36728';\nconst prefixo = 'unidavi/iot/t27/' + equipe + '/';\nconst intervalo = 10000;\nconst janela = 30 * 60 * 1000;\nconst agora = Date.now();\nconst catalogo = {\n    araucaria: {\n        nome: 'Araucária', legada: 'Araucaria', cientifico: 'Araucaria angustifolia',\n        cenario: 'Aquecimento e irrigação',\n        regras: [\n            ['temperatura', 'C', 50, 10, '<', 'aquecedor', 'aquecimento'],\n            ['umidade-solo', '%', 100, 35, '<', 'irrigacao', 'irrigacao']\n        ]\n    },\n    grandiuva: {\n        nome: 'Grandiúva', legada: 'Grandiuva', cientifico: 'Trema micrantha',\n        cenario: 'Irrigação e sombreamento leve',\n        regras: [\n            ['umidade-solo', '%', 100, 30, '<', 'irrigacao', 'irrigacao'],\n            ['luminosidade', '%', 100, 90, '>', 'sombreamento', 'sombreamento']\n        ]\n    }\n};\nconst cores = {OFFLINE:'#c62828', 'SEM DADOS':'#6b7280', ALERTA:'#ef6c00', ATUANDO:'#1976d2', NORMAL:'#2e7d32'};\nconst plantas = context.get('plantas') || {};\nfor (const especie of Object.keys(catalogo)) {\n    plantas[especie] ||= {sensores:{}, atuadores:{}, placa:null, leituraDesde:0, estado:null, divergencias:{}};\n}\nlet broker = context.get('broker') === true;\nconst gravacoes = [];\nfunction registrar(tabela, especie, campos) {\n    gravacoes.push({ tabela, payload: {equipe, especie, ...campos} });\n}\n\nif (msg.status) {\n    const conectado = msg.status.fill === 'green' && msg.status.text === 'node-red:common.status.connected';\n    if (conectado !== broker) {\n        for (const planta of Object.values(plantas)) {\n            planta.leituraDesde = agora;\n            planta.divergencias = {};\n            if (conectado) {\n                planta.placaConfirmada = false;\n                planta.atuadoresConfirmados = {};\n            }\n        }\n    }\n    broker = conectado;\n    context.set('broker', broker);\n} else if (msg.topic !== 'recalcular') {\n    if (typeof msg.topic !== 'string' || !msg.topic.startsWith(prefixo)) return null;\n    const partes = msg.topic.slice(prefixo.length).split('/');\n    const [especie, categoria, nome] = partes;\n    if (!Object.hasOwn(catalogo, especie)) return null;\n    const planta = plantas[especie];\n    const regras = catalogo[especie].regras;\n    let dado = Buffer.isBuffer(msg.payload) ? msg.payload.toString() : msg.payload;\n    const horario = new Date(agora).toISOString();\n\n    if (categoria === 'status' && partes.length === 2) {\n        if (dado !== 'online' && dado !== 'offline') return null;\n        planta.placaConfirmada = true;\n        if (planta.placa !== dado) {\n            if (dado === 'offline') {\n                planta.leituraDesde = agora;\n                planta.divergencias = {};\n            }\n            planta.placa = dado;\n            registrar('status_placa', especie, {status:dado, registrado_em:horario});\n        }\n    } else if (partes.length === 3) {\n        try {\n            if (typeof dado === 'string') dado = JSON.parse(dado);\n        } catch {\n            return null;\n        }\n        if (!dado || typeof dado !== 'object' || Array.isArray(dado)) return null;\n        if (categoria === 'sensor') {\n            const regra = regras.find(item => item[0] === nome);\n            // O Mega também publica a temperatura do DHT22 na Grandiúva.\n            const diagnostico = especie === 'grandiuva' && nome === 'temperatura';\n            const unidade = regra?.[1] ?? (diagnostico ? 'C' : null);\n            if (!unidade || msg.retain || dado.unidade !== unidade) return null;\n            const valor = dado.valor;\n            const limites = unidade === 'C' ? [-40, 80] : [0, 100];\n            if (!Number.isFinite(valor) || valor < limites[0] || valor > limites[1]) return null;\n            if (regra) {\n                const sensor = planta.sensores[nome] ||= {pontos:[]};\n                sensor.valor = valor;\n                sensor.em = agora;\n                sensor.pontos.push([agora, valor]);\n            }\n            registrar('leituras', especie, {sensor:nome, valor, unidade:dado.unidade, medido_em:horario});\n        } else if (categoria === 'atuador') {\n            const regra = regras.find(item => item[5] === nome || item[6] === nome);\n            if (!regra || !['ligado','desligado'].includes(dado.estado)) return null;\n            const atuador = regra[6];\n            const ligado = dado.estado === 'ligado';\n            planta.atuadoresConfirmados ||= {};\n            planta.atuadoresConfirmados[atuador] = true;\n            if (planta.atuadores[atuador]?.ligado !== ligado) {\n                planta.atuadores[atuador] = {ligado, em:agora, retido:!!msg.retain};\n                registrar('estados_atuadores', especie, {atuador, ligado, registrado_em:horario});\n            }\n        } else return null;\n    } else return null;\n}\n\nfunction situacao(planta, sensores, atuadores, divergencias) {\n    if (planta.placaConfirmada && planta.placa === 'offline') return ['OFFLINE', 'Placa desconectada.'];\n    if (!broker) return ['SEM DADOS', 'Conexão do Node-RED com o broker indisponível.'];\n    const faltando = sensores.find(sensor => sensor.em == null);\n    if (faltando) return ['SEM DADOS', 'Aguardando leitura de ' + faltando.nome + '.'];\n    const vencido = sensores.find(sensor => sensor.antigo);\n    if (vencido) return ['SEM DADOS', vencido.nome + ': última leitura há ' + vencido.idade + ' s.'];\n    if (atuadores.some(atuador => atuador.ligado == null)) return ['SEM DADOS', 'Aguardando estado dos atuadores.'];\n    const alerta = divergencias.find(atuador => agora - planta.divergencias[atuador.nome] > 2 * intervalo);\n    if (alerta) return ['ALERTA', alerta.nome + ': esperado ' + (alerta.esperado ? 'ligado.' : 'desligado.')];\n    if (divergencias.length) {\n        const anterior = ['NORMAL','ATUANDO'].includes(planta.estado) ? planta.estado : 'SEM DADOS';\n        return [anterior, 'Conferindo a resposta de ' + divergencias.map(a => a.nome).join(', ') + '.'];\n    }\n    const ligados = atuadores.filter(a => a.ligado).map(a => a.nome);\n    if (ligados.length) return ['ATUANDO', 'Em atuação: ' + ligados.join(', ') + '.'];\n    return ['NORMAL', 'Todas as leituras na faixa verde.'];\n}\n\nconst paineis = Object.entries(catalogo).map(([especie, cfg]) => {\n    const planta = plantas[especie];\n    const offline = planta.placaConfirmada && planta.placa === 'offline';\n    const sensores = cfg.regras.map(([nome, unidade, max, limite, operador]) => {\n        const sensor = planta.sensores[nome];\n        if (sensor) sensor.pontos = sensor.pontos.filter(([em]) => em >= agora - janela);\n        const em = sensor?.em ?? null;\n        const idade = em == null ? null : Math.floor((agora - em) / 1000);\n        const antigo = !broker || offline || em == null || em < planta.leituraDesde || agora - em > 3 * intervalo;\n        const valor = sensor?.valor ?? null;\n        const amarelo = '#fbc02d', verde = '#2e7d32';\n        const inicio = operador === '<' ? amarelo : verde;\n        const fim = operador === '<' ? verde : amarelo;\n        const corte = limite / max * 180;\n        return {nome, unidade:unidade === 'C' ? '°C' : unidade, max, limite, em, idade, valor, antigo,\n            faixa: 'conic-gradient(from -90deg at 50% 100%, ' + inicio + ' 0deg ' + corte + 'deg, ' + fim + ' ' + corte + 'deg 180deg, transparent 180deg)',\n            angulo: valor == null ? null : Math.max(0, Math.min(max, valor)) / max * 180 - 90,\n            pontos: sensor?.pontos || []};\n    });\n    const atuadores = cfg.regras.map(([, , , limite, operador, topico, nome], i) => {\n        const dado = planta.atuadores[nome];\n        const sensor = sensores[i];\n        const ligado = broker && !offline && planta.atuadoresConfirmados?.[nome] ? dado.ligado : null;\n        const esperado = sensor.antigo ? null : operador === '<' ? sensor.valor < limite : sensor.valor > limite;\n        const diverge = ligado != null && esperado != null && ligado !== esperado;\n        if (diverge) planta.divergencias[nome] ??= agora;\n        else delete planta.divergencias[nome];\n        const verificacao = ligado == null || esperado == null ? '' :\n            diverge ? (agora - planta.divergencias[nome] > 2 * intervalo ? 'Divergente' : 'Conferindo') : 'OK';\n        return {nome, topico, ligado, esperado, diverge, verificacao, em:dado?.em, retido:dado?.retido,\n            regra: sensor.nome + ' ' + operador + ' ' + limite + ' ' + sensor.unidade};\n    });\n    const [estado, motivo] = situacao(planta, sensores, atuadores, atuadores.filter(a => a.diverge));\n    if (planta.estado !== estado) {\n        planta.estado = estado;\n        registrar('estados_gerais', especie, {estado, motivo, registrado_em:new Date(agora).toISOString()});\n    }\n    return {payload:{especie, nome:cfg.nome, cientifico:cfg.cientifico, cenario:cfg.cenario, equipe,\n        estado, motivo, cor:cores[estado], broker, placa:broker && planta.placaConfirmada ? planta.placa : null,\n        agora, ultima:Math.max(0, ...sensores.map(s => s.em || 0)), sensores, atuadores}};\n});\ncontext.set('plantas', plantas);\nreturn [...paineis, gravacoes];",
+    "outputs": 3,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 455,
+    "y": 260,
+    "wires": [
+      [
+        "cp3-araucaria-0",
+        "cp3-araucaria-1",
+        "cp3-araucaria-2",
+        "cp3-araucaria-3"
+      ],
+      [
+        "cp3-grandiuva-0",
+        "cp3-grandiuva-1",
+        "cp3-grandiuva-2",
+        "cp3-grandiuva-3"
+      ],
+      [
+        "cp3-preparar"
+      ]
+    ],
+    "g": "cp3-bloco-estado"
+  },
+  {
+    "id": "cp3-preparar",
+    "type": "function",
+    "z": "cp3-fluxo",
+    "name": "Montar POST com chave pública",
+    "outputs": 1,
+    "func": "const base = String(env.get('SUPABASE_URL') || '').trim().replace(/\\/$/, '');\nconst chave = String(env.get('SUPABASE_KEY') || '').trim();\nconst publica = chave.startsWith('sb_publishable_');\nlet anon = false;\nif (chave.split('.').length === 3) {\n    try { anon = JSON.parse(Buffer.from(chave.split('.')[1], 'base64url')).role === 'anon'; } catch {}\n}\nif (!/^https:\\/\\/[a-z0-9-]+\\.supabase\\.co$/i.test(base) || (!publica && !anon)) {\n    if (!context.get('configInvalida')) {\n        node.warn('Supabase: configure SUPABASE_URL e SUPABASE_KEY pública (anon ou publishable).');\n        context.set('configInvalida', true);\n    }\n    return null;\n}\ncontext.set('configInvalida', false);\nmsg.method = 'POST';\nmsg.url = base + '/rest/v1/' + msg.tabela;\nmsg.headers = {'apikey':chave, 'Content-Type':'application/json', 'Prefer':'return=minimal'};\nif (anon) msg.headers.Authorization = 'Bearer ' + chave;\nmsg.requestTimeout = 10000;\nreturn msg;",
+    "x": 250,
+    "y": 620,
+    "wires": [
+      [
+        "cp3-post"
+      ]
+    ],
+    "g": "cp3-bloco-supabase"
+  },
+  {
+    "id": "cp3-post",
+    "type": "http request",
+    "z": "cp3-fluxo",
+    "name": "Inserir no Supabase",
+    "method": "use",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 510,
+    "y": 620,
+    "wires": [
+      [
+        "cp3-resultado"
+      ]
+    ],
+    "g": "cp3-bloco-supabase"
+  },
+  {
+    "id": "cp3-erro",
+    "type": "catch",
+    "z": "cp3-fluxo",
+    "name": "Falha de gravação",
+    "scope": [
+      "cp3-post"
+    ],
+    "uncaught": false,
+    "x": 500,
+    "y": 670,
+    "wires": [
+      [
+        "cp3-resultado"
+      ]
+    ],
+    "g": "cp3-bloco-supabase"
+  },
+  {
+    "id": "cp3-resultado",
+    "type": "function",
+    "z": "cp3-fluxo",
+    "name": "Exibir só tabela e código",
+    "outputs": 1,
+    "func": "if (msg.statusCode === 201 && !msg.error) {\n    node.status({fill:'green',shape:'dot',text:'Última inserção confirmada'});\n    return null;\n}\nconst codigo = Number.isInteger(msg.statusCode) ? msg.statusCode : 'falha de transporte';\nnode.status({fill:'red',shape:'ring',text:'Falha ao gravar'});\nreturn {payload:{servico:'Supabase', tabela:msg.tabela, codigo}};",
+    "x": 750,
+    "y": 640,
+    "wires": [
+      [
+        "cp3-log"
+      ]
+    ],
+    "g": "cp3-bloco-supabase"
+  },
+  {
+    "id": "cp3-log",
+    "type": "debug",
+    "z": "cp3-fluxo",
+    "name": "Erros Supabase",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 960,
+    "y": 640,
+    "wires": [],
+    "g": "cp3-bloco-supabase"
+  },
+  {
+    "id": "cp3-css",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Estilos do painel",
+    "group": "",
+    "order": 0,
+    "width": 0,
+    "height": 0,
+    "format": "<style>\n#nr-dashboard:has(.cp3-group) #toolbar{background:#1d345c!important;color:#fff}\n[ui-masonry]:has(.cp3-group){width:min(100%,960px)!important;height:auto!important;box-sizing:border-box;display:grid;gap:9px;margin:0 auto!important;padding:8px}\n[ui-masonry]:has(.cp3-group)>ui-card-panel{position:relative!important;inset:auto!important;transform:none!important;display:block;width:100%!important;height:auto!important;margin:0!important}\n#nr-dashboard .nr-dashboard-cardpanel.cp3-group{width:100%;background:transparent;box-shadow:none;margin:0}\n#nr-dashboard .cp3-group .nr-dashboard-cardtitle{width:auto!important;color:#495974;font-weight:700;padding-left:8px;margin:0 0 3px}\n#nr-dashboard .cp3-group .nr-dashboard-cardcontainer{width:100%!important;height:auto!important}\n#nr-dashboard .cp3-group ui-component{display:block;width:100%!important;height:auto!important;position:static!important}\n#nr-dashboard md-card.cp3-group{display:block;position:static!important;inset:auto!important;width:auto!important;height:auto!important;min-height:0;margin:0!important;background:transparent;overflow:visible}\n.cp3-tabs{display:flex;gap:6px;margin:2px 3px 6px}\n.cp3-tabs button{background:#eef3fa;border:1px solid #9db0ce;border-radius:6px;padding:6px 12px;color:#1d345c;font:600 13px system-ui;cursor:pointer}\n.cp3-tabs button[aria-current=\"page\"]{background:#1d345c;color:#fff;cursor:default}\n.cp3-group{max-width:100%;box-sizing:border-box}\n.cp3-group .nr-dashboard-template{background:transparent}\n.cp3-grid,.cp3-status{display:grid;gap:10px;grid-template-columns:repeat(2,minmax(0,1fr));padding:3px;color:#23344a}\n.cp3-card,.cp3-status{border:1px solid #c2cddc;border-radius:10px;background:#fff;box-sizing:border-box;padding:11px 13px;min-width:0}\n.cp3-status{grid-template-columns:minmax(115px,23%) minmax(0,1fr);align-items:center;margin:3px;gap:14px}\n.cp3-group h2,.cp3-group h3,.cp3-group p{margin:0 0 5px;line-height:1.3;color:inherit}\n.cp3-group h2{font-size:17px}.cp3-group h3{font-size:15px}.cp3-group p{font-size:14px}\n.cp3-badge{display:inline-block;color:#fff;text-align:center;border-radius:7px;padding:5px 9px;margin-right:4px}\n.cp3-overall{font-size:clamp(14px,2.8vw,24px);padding:15px 6px}\n.cp3-ok{color:#2e7d32}.cp3-erro{color:#c62828}.cp3-aviso{color:#9a4200}\n.cp3-on{background:#2e7d32}.cp3-off{background:#6b7280}\n.cp3-sensor{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:5px}\n.cp3-group .cp3-valor{font-size:clamp(16px,3.6vw,32px);font-weight:700;color:#1d345c}\n.cp3-valor small{font-size:52%;font-weight:500}.cp3-group .cp3-antigo{color:#6b7280}\n.cp3-medidor{width:100%;max-width:162px;justify-self:center}.cp3-inativo{opacity:.55}\n.cp3-arco{position:relative;aspect-ratio:2;overflow:hidden;border-radius:100% 100% 0 0 / 200% 200% 0 0}\n.cp3-arco:before{content:'';position:absolute;inset:31% 15% 0;background:#fff;border-radius:100% 100% 0 0 / 200% 200% 0 0}\n.cp3-ponteiro{position:absolute;bottom:0;left:calc(50% - 2px);height:90%;width:4px;transform-origin:50% 100%;background:#1d345c;border-radius:3px}\n.cp3-escala{display:flex;justify-content:space-between;gap:2px;font-size:11px;margin-top:4px}\n.cp3-chart{display:block;width:100%;height:114px}.cp3-group .cp3-legenda{color:#475569;font-size:11px}\n@media(max-width:540px){.cp3-grid{gap:5px}.cp3-card{padding:6px}.cp3-sensor{grid-template-columns:1fr}.cp3-medidor{max-width:108px}.cp3-escala{font-size:9px}.cp3-group h2{font-size:14px}.cp3-group h3{font-size:13px;overflow-wrap:anywhere}.cp3-group p{font-size:11px}}\n</style>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": false,
+    "templateScope": "global",
+    "className": "",
+    "x": 1080,
+    "y": 510,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-araucaria",
+    "type": "ui_tab",
+    "name": "Araucária",
+    "icon": "dashboard",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "cp3-araucaria-grupo-0",
+    "type": "ui_group",
+    "name": "Estado geral",
+    "tab": "cp3-araucaria",
+    "order": 1,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-araucaria-0",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Araucária · Estado geral",
+    "group": "cp3-araucaria-grupo-0",
+    "order": 1,
+    "width": "14",
+    "height": "4",
+    "format": "<nav class=\"cp3-tabs\" aria-label=\"Espécies\" ng-if=\"msg.payload\">\n  <button type=\"button\" ng-attr-aria-current=\"{{msg.payload.especie==='araucaria' ? 'page' : 'false'}}\" ng-click=\"send({payload:{tab:'Araucária'}})\">Araucária</button>\n  <button type=\"button\" ng-attr-aria-current=\"{{msg.payload.especie==='grandiuva' ? 'page' : 'false'}}\" ng-click=\"send({payload:{tab:'Grandiúva'}})\">Grandiúva</button>\n</nav>\n<section class=\"cp3-status\" ng-if=\"msg.payload\">\n  <strong class=\"cp3-badge cp3-overall\" ng-style=\"{'background-color':msg.payload.cor}\">{{msg.payload.estado}}</strong>\n  <div>\n    <h2>{{msg.payload.nome}} · <i>{{msg.payload.cientifico}}</i></h2>\n    <p>{{msg.payload.cenario}} · Equipe {{msg.payload.equipe}}</p>\n    <p>{{msg.payload.motivo}} <span ng-if=\"msg.payload.ultima\">Última leitura às {{msg.payload.ultima | date:'HH:mm:ss':'-0300'}}.</span></p>\n    <p>Node-RED e broker <b ng-class=\"msg.payload.broker ? 'cp3-ok' : 'cp3-erro'\">{{msg.payload.broker ? 'conectado' : 'desconectado'}}</b>\n      · Placa <b ng-class=\"{'cp3-ok':msg.payload.placa==='online','cp3-erro':msg.payload.placa==='offline'}\">{{msg.payload.placa || 'sem status atual'}}</b></p>\n  </div>\n</section>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 825,
+    "y": 205,
+    "wires": [
+      [
+        "cp3-trocar-aba"
+      ]
+    ],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-araucaria-grupo-1",
+    "type": "ui_group",
+    "name": "Sensores",
+    "tab": "cp3-araucaria",
+    "order": 2,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-araucaria-1",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Araucária · Sensores",
+    "group": "cp3-araucaria-grupo-1",
+    "order": 1,
+    "width": "14",
+    "height": "3",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card cp3-sensor\" ng-repeat=\"s in msg.payload.sensores track by s.nome\">\n    <div><h3>{{s.nome}}</h3>\n      <p class=\"cp3-valor\" ng-class=\"{'cp3-antigo':s.antigo}\"><span ng-if=\"s.em!=null\">{{s.valor | number:1}} <small>{{s.unidade}}</small></span><span ng-if=\"s.em==null\">sem leitura</span></p>\n      <p ng-if=\"s.em!=null\" ng-class=\"{'cp3-antigo':s.antigo}\">{{s.antigo ? 'Última leitura (desatualizada)' : 'Atualizado'}} há {{s.idade}} s</p>\n    </div>\n    <div class=\"cp3-medidor\" ng-class=\"{'cp3-inativo':s.antigo}\" role=\"img\" aria-label=\"{{s.nome}} de 0 a {{s.max}} {{s.unidade}}. Limiar {{s.limite}}.\">\n      <div class=\"cp3-arco\" ng-style=\"{'background-image':s.faixa}\"><div class=\"cp3-ponteiro\" ng-if=\"!s.antigo\" ng-style=\"{'transform':'rotate('+s.angulo+'deg)'}\"></div></div>\n      <div class=\"cp3-escala\"><span>0</span><span>Limiar {{s.limite}}</span><span>{{s.max}}</span></div>\n    </div>\n  </section>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 825,
+    "y": 280,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-araucaria-grupo-2",
+    "type": "ui_group",
+    "name": "Atuadores",
+    "tab": "cp3-araucaria",
+    "order": 3,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-araucaria-2",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Araucária · Atuadores",
+    "group": "cp3-araucaria-grupo-2",
+    "order": 1,
+    "width": "14",
+    "height": "2",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card\" ng-repeat=\"a in msg.payload.atuadores track by a.nome\">\n    <h3>{{a.nome}}</h3>\n    <p><strong class=\"cp3-badge\" ng-class=\"a.ligado ? 'cp3-on' : 'cp3-off'\">{{a.ligado==null ? 'sem estado atual' : a.ligado ? 'LIGADO' : 'desligado'}}</strong>\n      <span ng-if=\"a.ligado!=null\">{{a.retido ? 'observado às' : 'desde'}} {{a.em | date:'HH:mm:ss':'-0300'}}</span>\n    </p>\n    <p>Regra {{a.regra}} <b ng-if=\"a.verificacao\" ng-class=\"{'cp3-aviso':a.verificacao==='Divergente'}\">· {{a.verificacao}}</b></p>\n  </section>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 825,
+    "y": 355,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-araucaria-grupo-3",
+    "type": "ui_group",
+    "name": "Histórico",
+    "tab": "cp3-araucaria",
+    "order": 4,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-araucaria-3",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Araucária · Histórico",
+    "group": "cp3-araucaria-grupo-3",
+    "order": 1,
+    "width": "14",
+    "height": "4",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card\" ng-repeat=\"s in msg.payload.sensores track by s.nome\">\n    <h3>{{s.nome}} ({{s.unidade}})</h3>\n    <canvas id=\"cp3-{{msg.payload.especie}}-{{s.nome}}\" class=\"cp3-chart\" role=\"img\" aria-label=\"{{s.nome}} nos últimos 30 minutos. Limiar {{s.limite}} {{s.unidade}}.\"></canvas>\n    <p class=\"cp3-legenda\">{{s.pontos.length ? 'Leituras' : 'Sem leituras na janela'}} · Limiar tracejado · 30 min</p>\n  </section>\n</div>\n<script>\n(function(scope) {\n    const janela = 30 * 60 * 1000;\n    let quadro;\n    function desenhar(canvas, sensor, agora) {\n        const largura = canvas.clientWidth;\n        if (!largura) return;\n        const altura = canvas.clientHeight;\n        const escala = window.devicePixelRatio || 1;\n        canvas.width = largura * escala;\n        canvas.height = altura * escala;\n        const ctx = canvas.getContext('2d');\n        ctx.scale(escala, escala);\n        ctx.font = '11px system-ui';\n        const esq = 27, dir = largura - 8, topo = 11, base = altura - 23;\n        const x = t => esq + (t - (agora - janela)) / janela * (dir - esq);\n        const y = v => base - Math.max(0, Math.min(sensor.max, v)) / sensor.max * (base - topo);\n        ctx.lineWidth = 1;\n        for (let faixa = 0; faixa <= 4; faixa++) {\n            const v = faixa * sensor.max / 4;\n            ctx.beginPath(); ctx.moveTo(esq,y(v)); ctx.lineTo(dir,y(v));\n            ctx.strokeStyle = '#dce4ed'; ctx.stroke();\n            ctx.fillStyle = '#475569'; ctx.fillText(String(v),0,y(v)+4);\n        }\n        ctx.fillText('−30 min',esq,altura-5);\n        ctx.textAlign = 'center'; ctx.fillText('−15 min',(esq+dir)/2,altura-5);\n        ctx.textAlign = 'right'; ctx.fillText('agora',dir,altura-5);\n        ctx.strokeStyle = '#b77900'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);\n        ctx.beginPath(); ctx.moveTo(esq,y(sensor.limite)); ctx.lineTo(dir,y(sensor.limite)); ctx.stroke();\n        ctx.setLineDash([]); ctx.strokeStyle = '#1976d2'; ctx.fillStyle = '#1976d2';\n        ctx.save(); ctx.beginPath(); ctx.rect(esq-2,topo-2,dir-esq+4,base-topo+4); ctx.clip();\n        let anterior;\n        for (const [em, valor] of sensor.pontos) {\n            const px = x(em), py = y(valor);\n            if (anterior && em-anterior[0] <= 30000) {\n                ctx.beginPath(); ctx.moveTo(x(anterior[0]),y(anterior[1])); ctx.lineTo(px,py); ctx.stroke();\n            }\n            ctx.fillRect(px-1,py-1,2,2);\n            anterior = [em,valor];\n        }\n        ctx.restore();\n    }\n    function atualizar() {\n        cancelAnimationFrame(quadro);\n        quadro = requestAnimationFrame(() => {\n            const dados = scope.msg && scope.msg.payload;\n            if (!dados) return;\n            for (const sensor of dados.sensores) {\n                const canvas = document.getElementById('cp3-' + dados.especie + '-' + sensor.nome);\n                if (canvas) desenhar(canvas, sensor, dados.agora);\n            }\n        });\n    }\n    scope.$watch('msg', atualizar);\n    window.addEventListener('resize', atualizar);\n    scope.$on('$destroy', () => {\n        cancelAnimationFrame(quadro);\n        window.removeEventListener('resize', atualizar);\n    });\n})(scope);\n</script>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 825,
+    "y": 430,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-grandiuva",
+    "type": "ui_tab",
+    "name": "Grandiúva",
+    "icon": "dashboard",
+    "order": 2,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "cp3-grandiuva-grupo-0",
+    "type": "ui_group",
+    "name": "Estado geral",
+    "tab": "cp3-grandiuva",
+    "order": 1,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-grandiuva-0",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Grandiúva · Estado geral",
+    "group": "cp3-grandiuva-grupo-0",
+    "order": 1,
+    "width": "14",
+    "height": "4",
+    "format": "<nav class=\"cp3-tabs\" aria-label=\"Espécies\" ng-if=\"msg.payload\">\n  <button type=\"button\" ng-attr-aria-current=\"{{msg.payload.especie==='araucaria' ? 'page' : 'false'}}\" ng-click=\"send({payload:{tab:'Araucária'}})\">Araucária</button>\n  <button type=\"button\" ng-attr-aria-current=\"{{msg.payload.especie==='grandiuva' ? 'page' : 'false'}}\" ng-click=\"send({payload:{tab:'Grandiúva'}})\">Grandiúva</button>\n</nav>\n<section class=\"cp3-status\" ng-if=\"msg.payload\">\n  <strong class=\"cp3-badge cp3-overall\" ng-style=\"{'background-color':msg.payload.cor}\">{{msg.payload.estado}}</strong>\n  <div>\n    <h2>{{msg.payload.nome}} · <i>{{msg.payload.cientifico}}</i></h2>\n    <p>{{msg.payload.cenario}} · Equipe {{msg.payload.equipe}}</p>\n    <p>{{msg.payload.motivo}} <span ng-if=\"msg.payload.ultima\">Última leitura às {{msg.payload.ultima | date:'HH:mm:ss':'-0300'}}.</span></p>\n    <p>Node-RED e broker <b ng-class=\"msg.payload.broker ? 'cp3-ok' : 'cp3-erro'\">{{msg.payload.broker ? 'conectado' : 'desconectado'}}</b>\n      · Placa <b ng-class=\"{'cp3-ok':msg.payload.placa==='online','cp3-erro':msg.payload.placa==='offline'}\">{{msg.payload.placa || 'sem status atual'}}</b></p>\n  </div>\n</section>",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 1110,
+    "y": 205,
+    "wires": [
+      [
+        "cp3-trocar-aba"
+      ]
+    ],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-grandiuva-grupo-1",
+    "type": "ui_group",
+    "name": "Sensores",
+    "tab": "cp3-grandiuva",
+    "order": 2,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-grandiuva-1",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Grandiúva · Sensores",
+    "group": "cp3-grandiuva-grupo-1",
+    "order": 1,
+    "width": "14",
+    "height": "3",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card cp3-sensor\" ng-repeat=\"s in msg.payload.sensores track by s.nome\">\n    <div><h3>{{s.nome}}</h3>\n      <p class=\"cp3-valor\" ng-class=\"{'cp3-antigo':s.antigo}\"><span ng-if=\"s.em!=null\">{{s.valor | number:1}} <small>{{s.unidade}}</small></span><span ng-if=\"s.em==null\">sem leitura</span></p>\n      <p ng-if=\"s.em!=null\" ng-class=\"{'cp3-antigo':s.antigo}\">{{s.antigo ? 'Última leitura (desatualizada)' : 'Atualizado'}} há {{s.idade}} s</p>\n    </div>\n    <div class=\"cp3-medidor\" ng-class=\"{'cp3-inativo':s.antigo}\" role=\"img\" aria-label=\"{{s.nome}} de 0 a {{s.max}} {{s.unidade}}. Limiar {{s.limite}}.\">\n      <div class=\"cp3-arco\" ng-style=\"{'background-image':s.faixa}\"><div class=\"cp3-ponteiro\" ng-if=\"!s.antigo\" ng-style=\"{'transform':'rotate('+s.angulo+'deg)'}\"></div></div>\n      <div class=\"cp3-escala\"><span>0</span><span>Limiar {{s.limite}}</span><span>{{s.max}}</span></div>\n    </div>\n  </section>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 1110,
+    "y": 280,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-grandiuva-grupo-2",
+    "type": "ui_group",
+    "name": "Atuadores",
+    "tab": "cp3-grandiuva",
+    "order": 3,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-grandiuva-2",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Grandiúva · Atuadores",
+    "group": "cp3-grandiuva-grupo-2",
+    "order": 1,
+    "width": "14",
+    "height": "2",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card\" ng-repeat=\"a in msg.payload.atuadores track by a.nome\">\n    <h3>{{a.nome}}</h3>\n    <p><strong class=\"cp3-badge\" ng-class=\"a.ligado ? 'cp3-on' : 'cp3-off'\">{{a.ligado==null ? 'sem estado atual' : a.ligado ? 'LIGADO' : 'desligado'}}</strong>\n      <span ng-if=\"a.ligado!=null\">{{a.retido ? 'observado às' : 'desde'}} {{a.em | date:'HH:mm:ss':'-0300'}}</span>\n    </p>\n    <p>Regra {{a.regra}} <b ng-if=\"a.verificacao\" ng-class=\"{'cp3-aviso':a.verificacao==='Divergente'}\">· {{a.verificacao}}</b></p>\n  </section>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 1110,
+    "y": 355,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-grandiuva-grupo-3",
+    "type": "ui_group",
+    "name": "Histórico",
+    "tab": "cp3-grandiuva",
+    "order": 4,
+    "disp": true,
+    "width": "14",
+    "collapse": false,
+    "className": "cp3-group"
+  },
+  {
+    "id": "cp3-grandiuva-3",
+    "type": "ui_template",
+    "z": "cp3-fluxo",
+    "name": "Grandiúva · Histórico",
+    "group": "cp3-grandiuva-grupo-3",
+    "order": 1,
+    "width": "14",
+    "height": "4",
+    "format": "<div class=\"cp3-grid\">\n  <section class=\"cp3-card\" ng-repeat=\"s in msg.payload.sensores track by s.nome\">\n    <h3>{{s.nome}} ({{s.unidade}})</h3>\n    <canvas id=\"cp3-{{msg.payload.especie}}-{{s.nome}}\" class=\"cp3-chart\" role=\"img\" aria-label=\"{{s.nome}} nos últimos 30 minutos. Limiar {{s.limite}} {{s.unidade}}.\"></canvas>\n    <p class=\"cp3-legenda\">{{s.pontos.length ? 'Leituras' : 'Sem leituras na janela'}} · Limiar tracejado · 30 min</p>\n  </section>\n</div>\n<script>\n(function(scope) {\n    const janela = 30 * 60 * 1000;\n    let quadro;\n    function desenhar(canvas, sensor, agora) {\n        const largura = canvas.clientWidth;\n        if (!largura) return;\n        const altura = canvas.clientHeight;\n        const escala = window.devicePixelRatio || 1;\n        canvas.width = largura * escala;\n        canvas.height = altura * escala;\n        const ctx = canvas.getContext('2d');\n        ctx.scale(escala, escala);\n        ctx.font = '11px system-ui';\n        const esq = 27, dir = largura - 8, topo = 11, base = altura - 23;\n        const x = t => esq + (t - (agora - janela)) / janela * (dir - esq);\n        const y = v => base - Math.max(0, Math.min(sensor.max, v)) / sensor.max * (base - topo);\n        ctx.lineWidth = 1;\n        for (let faixa = 0; faixa <= 4; faixa++) {\n            const v = faixa * sensor.max / 4;\n            ctx.beginPath(); ctx.moveTo(esq,y(v)); ctx.lineTo(dir,y(v));\n            ctx.strokeStyle = '#dce4ed'; ctx.stroke();\n            ctx.fillStyle = '#475569'; ctx.fillText(String(v),0,y(v)+4);\n        }\n        ctx.fillText('−30 min',esq,altura-5);\n        ctx.textAlign = 'center'; ctx.fillText('−15 min',(esq+dir)/2,altura-5);\n        ctx.textAlign = 'right'; ctx.fillText('agora',dir,altura-5);\n        ctx.strokeStyle = '#b77900'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);\n        ctx.beginPath(); ctx.moveTo(esq,y(sensor.limite)); ctx.lineTo(dir,y(sensor.limite)); ctx.stroke();\n        ctx.setLineDash([]); ctx.strokeStyle = '#1976d2'; ctx.fillStyle = '#1976d2';\n        ctx.save(); ctx.beginPath(); ctx.rect(esq-2,topo-2,dir-esq+4,base-topo+4); ctx.clip();\n        let anterior;\n        for (const [em, valor] of sensor.pontos) {\n            const px = x(em), py = y(valor);\n            if (anterior && em-anterior[0] <= 30000) {\n                ctx.beginPath(); ctx.moveTo(x(anterior[0]),y(anterior[1])); ctx.lineTo(px,py); ctx.stroke();\n            }\n            ctx.fillRect(px-1,py-1,2,2);\n            anterior = [em,valor];\n        }\n        ctx.restore();\n    }\n    function atualizar() {\n        cancelAnimationFrame(quadro);\n        quadro = requestAnimationFrame(() => {\n            const dados = scope.msg && scope.msg.payload;\n            if (!dados) return;\n            for (const sensor of dados.sensores) {\n                const canvas = document.getElementById('cp3-' + dados.especie + '-' + sensor.nome);\n                if (canvas) desenhar(canvas, sensor, dados.agora);\n            }\n        });\n    }\n    scope.$watch('msg', atualizar);\n    window.addEventListener('resize', atualizar);\n    scope.$on('$destroy', () => {\n        cancelAnimationFrame(quadro);\n        window.removeEventListener('resize', atualizar);\n    });\n})(scope);\n</script>",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "cp3-group",
+    "x": 1110,
+    "y": 430,
+    "wires": [],
+    "g": "cp3-bloco-painel"
+  },
+  {
+    "id": "cp3-bloco-entrada",
+    "type": "group",
+    "z": "cp3-fluxo",
+    "name": "1 · Entrada MQTT",
+    "style": {
+      "label": true
+    },
+    "nodes": [
+      "cp3-mqtt"
+    ],
+    "x": 34,
+    "y": 39,
+    "w": 320,
+    "h": 82
+  },
+  {
+    "id": "cp3-bloco-painel",
+    "type": "group",
+    "z": "cp3-fluxo",
+    "name": "2 · Painel",
+    "style": {
+      "label": true
+    },
+    "nodes": [
+      "cp3-araucaria-0",
+      "cp3-araucaria-1",
+      "cp3-araucaria-2",
+      "cp3-araucaria-3",
+      "cp3-grandiuva-0",
+      "cp3-grandiuva-1",
+      "cp3-grandiuva-2",
+      "cp3-grandiuva-3",
+      "cp3-css",
+      "cp3-trocar-aba"
+    ],
+    "x": 670,
+    "y": 164,
+    "w": 770,
+    "h": 387
+  },
+  {
+    "id": "cp3-bloco-estado",
+    "type": "group",
+    "z": "cp3-fluxo",
+    "name": "3 · Estado e conexão",
+    "style": {
+      "label": true
+    },
+    "nodes": [
+      "cp3-status",
+      "cp3-tick",
+      "cp3-estado-fn"
+    ],
+    "x": 34,
+    "y": 174,
+    "w": 620,
+    "h": 160
+  },
+  {
+    "id": "cp3-bloco-supabase",
+    "type": "group",
+    "z": "cp3-fluxo",
+    "name": "4 · Supabase",
+    "style": {
+      "label": true
+    },
+    "nodes": [
+      "cp3-preparar",
+      "cp3-post",
+      "cp3-erro",
+      "cp3-resultado",
+      "cp3-log"
+    ],
+    "x": 34,
+    "y": 579,
+    "w": 1010,
+    "h": 132
+  },
+  {
+    "id": "cp3-trocar-aba",
+    "type": "ui_ui_control",
+    "z": "cp3-fluxo",
+    "name": "Navegação entre espécies",
+    "events": "change",
+    "x": 1330,
+    "y": 205,
+    "wires": [
+      []
+    ],
+    "g": "cp3-bloco-painel"
+  }
+]

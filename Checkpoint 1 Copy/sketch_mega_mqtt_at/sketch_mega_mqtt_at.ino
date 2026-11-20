@@ -1,9 +1,16 @@
 /*
- * UNIDAVI - Projeto Final IoT
- * Mega 2560 WiFi R3 + ESP8266 com firmware AT (ESP8266 NAO precisa ser regravado)
+ * UNIDAVI - Projeto Final IoT - Checkpoint 3
+ * Arduino Mega 2560 + shield Doit ESP8266 ESP-12E (4 chaves DIP).
+ * O Mega le sensores, aplica as regras, aciona os LEDs e o LCD.
+ * O ESP8266 do shield roda o sketch esp8266_ponte_mqtt (MQTT sobre TLS, porta 8883)
+ * e recebe as mensagens do Mega pelo Serial3 (pinos 14 TX3 / 15 RX3).
  *
- * Araucaria: T < 10 C -> aquecedor; umidade do solo < 35% -> bomba
- * Grandiuva: umidade do solo < 30% -> bomba; luminosidade > 90% -> sombreamento
+ * CHAVES DIP DO SHIELD
+ *   Funcionamento ..... 3 e 4 OFF (ESP inicia normal)
+ *   Gravar o ESP ...... 3 e 4 ON + sketch mega_gravar_esp no Mega (ver o arquivo)
+ *
+ * Araucaria: T < 10 C -> aquecimento; umidade do solo < 35% -> irrigacao (bomba)
+ * Grandiuva: umidade do solo < 30% -> irrigacao (bomba); luminosidade > 90% -> sombreamento
  *
  * PINOS
  *   DHT22 ........ D28        Botao ........ D30 (entre o pino e o GND)
@@ -21,8 +28,6 @@
  *   LIMPAR apaga a calibracao salva.
  */
 #include <DHT.h>
-#include <WiFiEspAT.h>
-#include <PubSubClient.h>
 #include <EEPROM.h>
 #include <LiquidCrystal.h>   // ja vem com a Arduino IDE
 #include <math.h>
@@ -40,25 +45,20 @@ const float LIMIAR_GRANDIUVA = 30.0f, LIMIAR_LUZ = 90.0f;
 // ---------- Tempos ----------
 const unsigned long LEITURA_MS = 2000UL, PUBLICACAO_MS = 10000UL;
 const unsigned long DEBOUNCE_MS = 40UL, TRIPLO_CLIQUE_MS = 2000UL;
-const unsigned long RETENTATIVA_REDE_MS = 15000UL, RETENTATIVA_MQTT_MS = 5000UL;
 const unsigned long TROCA_PAGINA_MS = 3000UL;   // tempo de cada tela do LCD
+const unsigned long ESPECIE_PONTE_MS = 5000UL;  // reenvio da especie ativa ao ESP
+const unsigned long PONTE_SILENCIO_MS = 8000UL; // sem "S" do ESP por esse tempo = ponte fora
 
-// ---------- Rede (preencher com os dados reais) ----------
-const char WIFI_SSID[] = "Piso Inferior";
-const char WIFI_SENHA[] = "12345678";
-const char MQTT_HOST[] = "test.mosquitto.org"; // EXEMPLO: IP do PC com o broker, NAO do Mega
-const uint16_t MQTT_PORTA = 1883;
-const char MQTT_USUARIO[] = "";           // vazio caso sem autenticacao
-const char MQTT_SENHA[] = "";
-// Padrao CP2: unidavi/iot/t27/{matriculas}/{especie}/{sensor|atuador|status}/....
-const char MQTT_PREFIXO[] = "unidavi/iot/t27/1025897_36728";
+// ---------- Ponte com o ESP8266 ----------
+// Servidor, usuario, senha e prefixo ficam no sketch do ESP (esp8266_ponte_mqtt).
+// Topicos: unidavi/iot/t27/1025897_36728/{especie}/{sensor|atuador|status}/...
+#define PONTE Serial3
+const unsigned long PONTE_BAUD = 115200UL;
 
 DHT dht(PINO_DHT, DHT22);
 LiquidCrystal lcd(LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
 uint8_t paginaDisplay = 0;               // 0 = leituras, 1 = atuadores, 2 = rede
 unsigned long ultimaTrocaPagina = 0;
-WiFiClient wifiClient;
-PubSubClient mqtt(wifiClient);
 
 enum Planta { ARAUCARIA, GRANDIUVA };
 Planta plantaAtiva = ARAUCARIA;
@@ -93,8 +93,11 @@ bool forcarTemp = false, forcarSolo = false, forcarLuz = false;
 float tempForcada = 0, soloForcado = 0, luzForcada = 0;
 
 unsigned long ultimaLeitura = 0, ultimaPublicacao = 0;
-unsigned long ultimaTentativaWiFi = 0, ultimaTentativaMQTT = 0;
-bool interfaceWiFiOK = false;
+// Estado da rede informado pelo ESP
+bool wifiOk = false, mqttOk = false;
+unsigned long ultimoStatusPonte = 0, ultimoEnvioEspecie = 0;
+char linhaPonte[32];
+uint8_t tamLinhaPonte = 0;
 bool publicacaoPendente = true, atuadoresPublicados = false;
 Estados ultimosEstadosPublicados;
 
@@ -187,9 +190,9 @@ void imprimirStatus() {
   Serial.print(F("Aquecedor: ")); Serial.println(estados.aquecedor ? F("ON") : F("OFF"));
   Serial.print(F("Bomba: ")); Serial.println(estados.bomba ? F("ON") : F("OFF"));
   Serial.print(F("Sombra: ")); Serial.println(estados.sombreamento ? F("ON") : F("OFF"));
-  Serial.print(F("WiFi: "));
-  Serial.println(interfaceWiFiOK && WiFi.status() == WL_CONNECTED ? F("CONECTADO") : F("DESCONECTADO"));
-  Serial.print(F("MQTT: ")); Serial.println(mqtt.connected() ? F("CONECTADO") : F("DESCONECTADO"));
+  Serial.print(F("Ponte ESP: ")); Serial.println(ponteAtiva() ? F("OK") : F("SEM RESPOSTA"));
+  Serial.print(F("WiFi: ")); Serial.println(wifiOk ? F("CONECTADO") : F("DESCONECTADO"));
+  Serial.print(F("MQTT (TLS 8883): ")); Serial.println(mqttOk ? F("CONECTADO") : F("DESCONECTADO"));
 }
 
 // ---------- Display LCD 16x2 ----------
@@ -228,12 +231,15 @@ void atualizarDisplay() {
                estados.sombreamento ? "ON" : "OFF", (int)limiarSolo());
       break;
 
-    default: {  // rede
-      bool wifiOk = interfaceWiFiOK && WiFi.status() == WL_CONNECTED;
-      snprintf(l1, sizeof(l1), "WiFi: %s", wifiOk ? "OK" : "OFF");
-      snprintf(l2, sizeof(l2), "MQTT: %s", mqtt.connected() ? "OK" : "OFF");
+    default:  // rede
+      if (!ponteAtiva()) {
+        snprintf(l1, sizeof(l1), "ESP: SEM RESP.");
+        snprintf(l2, sizeof(l2), "Fios 14/15 DIP34");
+      } else {
+        snprintf(l1, sizeof(l1), "WiFi: %s", wifiOk ? "OK" : "OFF");
+        snprintf(l2, sizeof(l2), "MQTT TLS: %s", mqttOk ? "OK" : "OFF");
+      }
       break;
-    }
   }
   escreverLinha(0, l1);
   escreverLinha(1, l2);
@@ -250,16 +256,13 @@ void atualizarTudo() {
 
 // ---------- Botao ----------
 void trocarPlanta() {
-  if (mqtt.connected()) {
-    char topicoStatus[100];
-    snprintf(topicoStatus, sizeof(topicoStatus), "%s/%s/status", MQTT_PREFIXO, especieTopico());
-    mqtt.publish(topicoStatus, "offline", true);
-    mqtt.disconnect(); // A nova conexao registra a ultima vontade da nova especie.
-  }
   plantaAtiva = plantaAtiva == ARAUCARIA ? GRANDIUVA : ARAUCARIA;
+  // O ESP publica "offline" na especie anterior e reconecta com a LWT da nova.
+  // Quando reconectar ele manda "C" e o Mega republica tudo.
+  enviarEspecie();
+  mqttOk = false;
   publicacaoPendente = true;
   atuadoresPublicados = false;
-  ultimaTentativaMQTT = millis() - RETENTATIVA_MQTT_MS;
   Serial.print(F("\n>>> PLANTA ALTERADA: ")); Serial.println(nomePlanta());
   paginaDisplay = 0;                 // mostra a nova planta no LCD na hora
   ultimaTrocaPagina = millis();
@@ -332,59 +335,62 @@ void processarSerial() {
   atualizarTudo();
 }
 
-// ---------- Rede ----------
-void iniciarRede() {
-  Serial3.begin(115200);
-  WiFi.init(Serial3);
-  if (WiFi.status() == WL_NO_MODULE) {
-    interfaceWiFiOK = false;
-    Serial.println(F("ESP8266 nao respondeu: confira firmware AT, baud e DIP"));
-    return;
-  }
-  interfaceWiFiOK = true;
-  mqtt.setServer(MQTT_HOST, MQTT_PORTA);
-  mqtt.setBufferSize(384);
-  mqtt.setSocketTimeout(5);
-  mqtt.setKeepAlive(30);
-  Serial.println(F("Interface AT encontrada. Tentando conectar Wi-Fi..."));
-  ultimaTentativaWiFi = millis();
-  WiFi.begin(WIFI_SSID, WIFI_SENHA);
+// ---------- Ponte com o ESP8266 ----------
+bool ponteAtiva() {
+  return ultimoStatusPonte != 0 && millis() - ultimoStatusPonte < PONTE_SILENCIO_MS;
 }
 
-void manterRede() {
-  if (!interfaceWiFiOK) return;
-  unsigned long agora = millis();
+void enviarEspecie() {
+  PONTE.print(F("E,"));
+  PONTE.print(especieTopico());
+  PONTE.print('\n');
+  ultimoEnvioEspecie = millis();
+}
 
-  if (WiFi.status() != WL_CONNECTED) {
-    if (agora - ultimaTentativaWiFi >= RETENTATIVA_REDE_MS) {
-      ultimaTentativaWiFi = agora;
-      Serial.println(F("Reconectando Wi-Fi..."));
-      WiFi.begin(WIFI_SSID, WIFI_SENHA);
+void iniciarPonte() {
+  PONTE.begin(PONTE_BAUD);
+  Serial.println(F("Aguardando a ponte ESP8266 (MQTT/TLS)..."));
+  enviarEspecie();
+}
+
+void processarLinhaPonte(const char* l) {
+  // S,<wifi>,<mqtt>
+  if (l[0] == 'S' && l[1] == ',' && l[3] == ',' && l[5] == '\0') {
+    bool mqttAntes = mqttOk;
+    wifiOk = l[2] == '1';
+    mqttOk = l[4] == '1';
+    ultimoStatusPonte = millis();
+    if (mqttOk != mqttAntes) {
+      Serial.print(F("[PONTE] MQTT ")); Serial.println(mqttOk ? F("conectado") : F("desconectado"));
     }
-    return;
+  } else if (l[0] == 'C' && l[1] == '\0') {
+    // O ESP acabou de conectar ao broker: republicar estados retidos e leituras.
+    mqttOk = wifiOk = true;
+    ultimoStatusPonte = millis();
+    atuadoresPublicados = false;
+    publicacaoPendente = true;
+    Serial.println(F("[PONTE] Conectado ao broker (TLS)"));
   }
+  // Outras linhas (ruido do boot do ESP) sao ignoradas.
+}
 
-  if (!mqtt.connected()) {
-    if (agora - ultimaTentativaMQTT >= RETENTATIVA_MQTT_MS) {
-      ultimaTentativaMQTT = agora;
-      char topicoStatus[100], clientId[80];
-      snprintf(topicoStatus, sizeof(topicoStatus), "%s/%s/status", MQTT_PREFIXO, especieTopico());
-      snprintf(clientId, sizeof(clientId), "t27-1025897_36728-%s-mega01", especieTopico());
-      Serial.print(F("[MQTT] Tentando ")); Serial.print(MQTT_HOST);
-      Serial.print(':'); Serial.println(MQTT_PORTA);
-      bool ok = mqtt.connect(clientId, strlen(MQTT_USUARIO) ? MQTT_USUARIO : NULL,
-                             strlen(MQTT_USUARIO) ? MQTT_SENHA : NULL,
-                             topicoStatus, 1, true, "offline");
-      if (ok) {
-        Serial.println(F("MQTT conectado"));
-        atuadoresPublicados = false;
-        publicacaoPendente = true;
-      } else {
-        Serial.print(F("Falha MQTT, state=")); Serial.println(mqtt.state());
-      }
-      ultimaTentativaMQTT = millis();
+void lerPonte() {
+  while (PONTE.available()) {
+    char c = (char)PONTE.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      linhaPonte[tamLinhaPonte] = '\0';
+      if (tamLinhaPonte) processarLinhaPonte(linhaPonte);
+      tamLinhaPonte = 0;
+    } else if (tamLinhaPonte < sizeof(linhaPonte) - 1) {
+      linhaPonte[tamLinhaPonte++] = c;
+    } else {
+      tamLinhaPonte = 0;   // linha longa demais: descarta
     }
-  } else mqtt.loop();
+  }
+  if (!ponteAtiva()) wifiOk = mqttOk = false;
+  // Reenvia a especie de tempos em tempos: cobre o ESP reiniciando sozinho.
+  if (millis() - ultimoEnvioEspecie >= ESPECIE_PONTE_MS) enviarEspecie();
 }
 
 void numeroOuNull(char* destino, float valor, bool valido) {
@@ -392,15 +398,18 @@ void numeroOuNull(char* destino, float valor, bool valido) {
   else strcpy(destino, "null");
 }
 
+// Envia ao ESP: P,<retida>,<sufixo>,<payload>. O ESP monta o topico com o prefixo.
 bool publicarMensagem(const char* sufixo, const char* payload, bool retida) {
-  char topico[110];
-  snprintf(topico, sizeof(topico), "%s/%s/%s", MQTT_PREFIXO, especieTopico(), sufixo);
-  if (!mqtt.publish(topico, payload, retida)) {
-    Serial.print(F("[MQTT] Falha ao publicar: ")); Serial.println(topico);
-    return false;
-  }
-  Serial.print(F("[MQTT] Publicado: ")); Serial.println(topico);
-  Serial.println(payload);
+  if (!mqttOk) return false;
+  PONTE.print(F("P,"));
+  PONTE.print(retida ? '1' : '0');
+  PONTE.print(',');
+  PONTE.print(sufixo);
+  PONTE.print(',');
+  PONTE.print(payload);
+  PONTE.print('\n');
+  Serial.print(F("[MQTT] ")); Serial.print(especieTopico()); Serial.print('/');
+  Serial.print(sufixo); Serial.print(' '); Serial.println(payload);
   return true;
 }
 
@@ -419,10 +428,11 @@ bool publicarAtuador(const char* nome, bool ligado) {
 }
 
 void publicarAtuadores() {
-  if (!interfaceWiFiOK || !mqtt.connected()) return;
+  if (!mqttOk) return;
   bool ok = true;
+  // Nome do topico igual ao da Especificacao e da tabela "regras": aquecimento.
   if (!atuadoresPublicados || estados.aquecedor != ultimosEstadosPublicados.aquecedor)
-    ok = publicarAtuador("aquecedor", estados.aquecedor) && ok;
+    ok = publicarAtuador("aquecimento", estados.aquecedor) && ok;
   if (!atuadoresPublicados || estados.bomba != ultimosEstadosPublicados.bomba)
     ok = publicarAtuador("irrigacao", estados.bomba) && ok;
   if (!atuadoresPublicados || estados.sombreamento != ultimosEstadosPublicados.sombreamento)
@@ -431,12 +441,12 @@ void publicarAtuadores() {
 }
 
 void publicarTelemetria() {
-  if (!interfaceWiFiOK || !mqtt.connected()) return;
+  if (!mqttOk) return;
+  // O status "online" e publicado pelo ESP ao conectar (e "offline" pela LWT).
   bool ok = publicarSensor("temperatura", leituras.temperatura, leituras.temperaturaValida, "C");
   ok = publicarSensor("umidade-solo", leituras.umidadeSolo, leituras.soloValido, "%") && ok;
   ok = publicarSensor("luminosidade", leituras.luminosidade,
                        plantaAtiva == GRANDIUVA && leituras.luzValida, "%") && ok;
-  ok = publicarMensagem("status", "online", true) && ok;
   publicacaoPendente = !ok;
 }
 
@@ -461,11 +471,11 @@ void setup() {
   escreverLinha(1, "Iniciando...");
   delay(1500);
 
-  Serial.println(F("=== UNIDAVI IoT - Mega + ESP8266 AT + MQTT ==="));
+  Serial.println(F("=== UNIDAVI IoT - Mega + ponte ESP8266 (MQTT sobre TLS) ==="));
   Serial.println(F("Calibre: SECO/MOLHADO (solo) e ESCURO/CLARO (LDR)"));
   atualizarTudo();
   ultimaPublicacao = millis();
-  iniciarRede();
+  iniciarPonte();
 }
 
 void loop() {
@@ -480,7 +490,7 @@ void loop() {
     atualizarDisplay();
   }
 
-  manterRede();
+  lerPonte();
   publicarAtuadores();
 
   if (millis() - ultimaPublicacao >= PUBLICACAO_MS ||
